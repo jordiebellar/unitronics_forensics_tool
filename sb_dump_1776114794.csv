@@ -1,0 +1,513 @@
+address,value,description
+0,0,Always 0
+1,1,Always 1
+2,0,Power-up bit
+3,1,"1 second pulse ( a squarewave of 1 second duration, with a 50% duty cycle)"
+4,0,Divide by zero
+5,0,Short circuits in loads linked to transistor Outputs on snap-in/expansion I/O modules
+6,0,Keyboard is active
+7,0,100 mS pulse
+8,1,Battery low (1=low)
+9,0,Ram Failure
+10,0,Result of Float operation is illegal (Reset by user)
+11,0,
+12,0,
+13,0,ON at Rising Edge of SB3 (1sec pulse)
+14,0,"Request to calculate current PLC temperature (not supported by V120, V130, V350)"
+15,0,ON at Rising Edge of SB7 (100 mS pulse)
+16,0,Touchscreen is Active (has been touched] (Touch models only)
+17,0,Enable/Disable Touch-screen indication (Message Board function)
+18,0,
+19,1,
+20,0,
+21,0,
+22,0,"Enable Virtual Keyboard (Relevant only to Standard Vision + Touchscreen, not Enhanced)"
+23,0,Enable all HMI keys during Keypad Entry
+24,1,Initialize and Reset PLC (Set to cause PLC Reset and to Initialize all operands to 0)
+25,0,Use operand value as Index of HMI variable
+26,0,Exiting OS Draw Mode ( ON for 1 cycle after OS draw)
+27,0,Disable all keypad automation (V280 only)
+28,1,LCD: controlled by OS (OS Drawing)
+29,0,Current keypad entry sets SB 30 (HMI keypad entries complete)
+30,0,Keypad Vars Locked(Standard: OS turns ON after entries complete (V130: User turns ON/OFF)
+31,0,Refresh current LCD screen display variables
+32,0,HMI keypad entry in progress (Standard Vision)
+33,0,Load Disply + linked Call Sub-ON 1 scan 1st time the Sub runs (Standard Vision)
+34,0,UnLoad Disply w/linked Call Sub-ON 1 scan last time Sub runs (Standard Vision)
+35,0,OnLine Test Point
+36,1,INFO mode
+37,0,Exclude Last Viewed Display from FIFO
+38,0,"Invert Touchscreen element pixels (Text, images) (V280/290-BW)"
+39,0,"FLASH on LCD, Display not Refreshed (V570, 290-C)"
+40,0,Key: # 0
+41,0,Key: # 1 (also Up arrow for V120)
+42,0,Key: # 2
+43,0,Key: # 3
+44,0,Key: # 4
+45,0,Key: # 5
+46,0,Key: # 6  (also Down arrow for V120)
+47,0,Key: # 7
+48,0,Key: # 8
+49,0,Key: # 9
+50,0,Plus/Minus
+51,0,Left Arrow
+52,0,Right Arrow
+53,0,ENTER
+54,0,Key <i>
+55,0,Up
+56,0,Down
+57,0,ESC
+58,0,F1
+59,0,F2
+60,0,F3
+61,0,F4
+62,0,F5
+63,0,F6
+64,0,F7
+65,0,F8
+66,0,F9
+67,0,F10
+68,0,F11
+69,0,F12
+70,0,F13
+71,0,F14
+72,0,F15
+73,0,Disable HMI cursor blinking (Standard) Calibrate Touchscreen (touchscreen models)
+74,0,
+75,0,"Download Complete, PLC and HMI application"
+76,0,Keypad Entry: Focus (V130/350/570)
+77,0,Modem Busy (Enhanced Vision: COM 1) (Standard Vision: the COM linked to modem)
+78,0,"Modem Busy, COM Port 2 (V570, 290-C)"
+79,0,"Modem Busy, COM Port 3 (V570, 290-C)"
+80,0,Modem Init :COM 1
+81,0,Modem Init: Fail  1
+82,0,Modem Init: COM 2
+83,0,Modem Init Fail: COM 2
+84,0,Modem Init: COM 3
+85,0,Modem Init Fail: COM 3
+86,0,Modem Connected: Com Port 1
+87,0,Modem Connected: COM 2
+88,0,Modem Connected: COM3
+89,0,CLIP - Caller Number is here
+90,1,
+91,0,I/O Exp. Module--Command buffer is full
+92,0,Keypad Entry in Progress (ON during entry) (Enhanced Vision)
+93,0,Keypad Entry Var Activates (ON for 1 scan) (Enhanced Vision)
+94,0,Keypad Entry Var Complete (ON for 1 scan) (Enhanced Vision)
+95,1,
+96,1,
+97,0,
+98,0,
+99,0,
+100,0,GPRS modem connected (TC 65)
+101,0,
+102,0,MODBUS Read Long: Transpose
+103,0,
+104,0,Enable MODBUS over GPRS: COM1. Set before MODBUS Configuration.
+105,0,Enable MODBUS over GPRS: COM2. Set before MODBUS Configuration.
+106,0,Enable MODBUS over GPRS: COM3. Set before MODBUS Configuration.
+107,0,
+108,0,"Press ""Enter"" 1x (V130) When SB 108 + 76 ON, KP entry requires Enter pressed once"
+109,0,"V130 only. Arrow keys tab between keypad entry fields: 0 = Left/Right, 1= Up/Down"
+110,0,Draw: Out of Range
+111,0,Disable Virtual Keypad. ON=Virtual Keypad is disabled but Keypad enabled (Vision560)
+112,1,On-Board USB port found
+113,0,"USB cable - connected to PC (set to ""1"" when connected. Relevant models only)"
+114,0,
+115,0,"V130 only: Keypad keys, letters/number order.  0=abc2, def3, etc(default) 1=2abc, 3def, etc"
+116,0,SD Trends to SD: Set to Overwrite .utr
+117,0,SD Trends: Jump to next segment
+118,0,SD Trends: Jump to previous segment
+119,0,SD Trends: System busy - Draw Trend is gathering data
+120,0,DTR COM Port 1 (signal output from PLC)
+121,0,DSR COM Port 1 (signal input to PLC)
+122,0,DTR COM Port 2 (signal output from PLC)
+123,0,DSR COM Port 2 (signal input to PLC)
+124,0,DTR COM Port 3 (signal output from PLC)
+125,1,DSR COM Port 3 (signal input to PLC)
+126,0,
+127,0,
+128,0,
+129,0,
+130,0,
+131,0,
+132,0,"COM Port 1, Data Transmission"
+133,0,"COM Port 2, Data Transmission"
+134,0,"COM Port 3, Data Transmission"
+135,1,"COM Port 1, Data Receive"
+136,0,"COM Port 2, Data Receive"
+137,0,"COM Port 3, Data Receive"
+138,0,
+139,1,
+140,0,Remote access - read only
+141,0,Ethernet: Card Exists
+142,0,Ethernet: Card Initialized
+143,0,Ethernet: Socket 0 Initialized (not relevant for V700)
+144,0,Ethernet: Socket 1 Initialized (not relevant for V700)
+145,0,Ethernet: Socket 2 Initialized (not relevant for V700)
+146,0,Ethernet: Socket 3 Initialized (not relevant for V700)
+147,0,Ethernet: Socket 0 Connected (not relevant for V700)
+148,0,Ethernet: Socket 1 Connected (not relevant for V700)
+149,0,Ethernet: Socket 2 Connected (not relevant for V700)
+150,0,Ethernet: Socket 3 Connected (not relevant for V700)
+151,0,Ethernet Status: Link
+152,0,"Ethernet Status: Rate, 10 mbps"
+153,0,"Ethernet Status: Rate, 100 mbps"
+154,0,Ethernet Status: Collision
+155,0,Ethernet Socket 0: Send in Progress (not relevant for V700)
+156,0,Ethernet Socket 1: Send in Progress (not relevant for V700)
+157,0,Ethernet Socket 2: Send in Progress (not relevant for V700)
+158,0,Ethernet Socket 3: Send in Progress (not relevant for V700)
+159,0,Enable UDP Unicast in Socket 0
+160,0,
+161,0,
+162,0,Link failed after card was properly initialized
+163,0,
+164,0,
+165,0,
+166,0,
+167,0,Error detected on ETHERNET
+168,0,"To activate ""Link lost, auto-recover"": Set SB 168 (Power-up Value =1)"
+169,0,
+170,0,
+171,0,
+172,0,
+173,0,
+174,0,
+175,0,
+176,0,
+177,0,Snap I/O Module Installed | 1=Snap Installed| 0=Snap is Not Installed
+178,0,Profibus Card found
+179,0,
+180,0,"COM1 Received Message Invalid, STX/ETX/Checksum (V570, 290-C,130)"
+181,0,"COM2 Received Message Invalid, STX/ETX/Checksum (V570, 290-C,130)"
+182,0,"COM3 Received Message Invalid, STX/ETX/Checksum (V570, 290-C,130)"
+183,0,
+184,0,SMS: TX Success (Standard: any COM linked to Modem) (Enhanced: Modem on COM1)
+185,0,"SMS: TX Failed, (Standard: any COM linked to Modem) (Enhanced: Modem on COM1)"
+186,0,"SMS: TX Success, COM2 (ACK) (Enhanced only)"
+187,0,"SMS: TX Failed, COM2 (NACK) (Enhanced only)"
+188,0,SMS: TX Succeeded COM3 (ACK) (Enhanced only)
+189,0,"SMS: TX Failed, COM3 (NACK) (Enhanced only)"
+190,0,
+191,0,
+192,0,
+193,0,
+194,0,
+195,0,
+196,1,
+197,0,
+198,0,"SMS Arrived, Record the Received SMS Message Length in SI 198"
+199,0,Save SMS to Memory Vector
+200,0,CANbus Network operand
+201,0,CANbus Network operand
+202,0,CANbus Network operand
+203,0,CANbus Network operand
+204,0,CANbus Network operand
+205,0,CANbus Network operand
+206,0,CANbus Network operand
+207,0,CANbus Network operand
+208,0,CANbus Network operand
+209,0,Customer ID
+210,0,CANbus Network operand
+211,0,CANbus Network operand
+212,0,CANbus Network operand
+213,0,CANbus Network operand
+214,0,CANbus Network operand
+215,0,CANbus Network operand
+216,1,
+217,0,SD Card Present
+218,0,SD Card is Write-Enabled
+219,1,SD: No Pending Tasks (SD Card may be Ejected)
+220,0,
+221,0,
+222,0,
+223,0,
+224,0,
+225,0,
+226,0,CANopen COB-ID mask (Enhanced Vision only)
+227,0,
+228,0,
+229,0,
+230,0,
+231,0,
+232,0,
+233,0,
+234,0,
+235,0,
+236,1,CANbus Network communication error
+237,0,CANbus ISC Network disable
+238,0,
+239,0,
+240,0,CANopen: Configuration downloaded
+241,0,CANopen: Configured
+242,0,CANopen: SDO in Progress
+243,0,CANopen: SDO transfer failed
+244,0,
+245,0,
+246,0,
+247,0,
+248,0,
+249,0,"Black Background, when Sys screen (Alarm,Info) does not stretch across screen.Enhanced"
+250,0,HMI keypad entry within limits (Standard Vision)
+251,0,Keypad entry exceeds limits  (Standard Vision)
+252,0,"EX-RC1, Control Bus COMM LED| Use SB in program to control the LED to signal EX-RC1 - OPLC communication failure."
+253,0,EX-RC1 - I/Os COM Error| ON at communication failure between EX-RC1 - I/Os
+254,0,EX-RC1: Reset all outputs| Turn SB ON to reset all outputs. Controlled by user.
+255,0,Init Expansion I/O failed.
+256,0,
+257,0,
+258,0,
+259,0,
+260,0,
+261,0,
+262,0,
+263,0,
+264,0,
+265,0,
+266,0,
+267,0,
+268,0,
+269,0,
+270,0,
+271,0,
+272,0,
+273,0,
+274,0,
+275,0,
+276,0,
+277,0,
+278,1,
+279,0,Send SMS message in ASCII format (ON sends ASCII)
+280,0,Force Message Display on Cell Phone
+281,0,GPRS Server is on-line (COM1)
+282,0,GPRS Server is on-line (COM2)
+283,0,GPRS Server is on-line (COM3)
+284,0,Send PDO1 (ON when SI 212 =8)
+285,0,Send PDO2 (ON when SI 213 =8)
+286,0,Send PDO3 (ON when SI 214 =8)
+287,0,Send PDO4 (ON when SI 215 =8)
+288,0,RTR PDO1 (ON when SI 216 =12)
+289,0,RTR PDO2 (ON when SI 217 =12)
+290,0,RTR PDO3 (ON when SI 218 =12)
+291,0,RTR PDO4 (ON when SI 219 =12)
+292,0,Send NMT MC (ON when SI 221 =8)
+293,0,Send RTR NMT (ON when SI 222 =12)
+294,0,
+295,0,
+296,0,
+297,0,
+298,0,
+299,0,
+300,0,Reset PLC
+301,0,PLC exits Stop and returns to Run Mode; turns ON for 1 scan
+302,1,"Stop Mode ON, turns ON when entering Stop Mode, OFF when exists to Run Mode"
+303,0,Backup Security in Memory
+304,0,
+305,0,"Restrict MODBUS Master Access to MB & SI arrays specified via SIs 165-168, Vision Enhanced + Samba"
+306,0,
+307,0,
+308,0,
+309,0,
+310,0,Buzzer (290/570/350/530)
+311,0,Buzzer - Screen Touch (Touchscreen models only)
+312,0,
+313,0,
+314,0,"Block PC access to PLC. OFF by default. When ON: access via VisiLogic, RA, etc. blocked"
+315,0,
+316,0,
+317,0,
+318,0,
+319,0,
+320,0,
+321,0,
+322,0,
+323,0,
+324,0,SD: Open File (Read to SD) Status: SI 67
+325,0,SD File: Read Chunk in Progress (Chunk= 512 bytes)
+326,0,"SD Read File :EOF, entire file has been read"
+327,0,SD: Open File (Write to SD) Status : SI 67
+328,0,SD File: Write Chunk in Progress (Chunk= 512 bytes)
+329,0,"SD Write File: EOF, entire file has been read"
+330,0,"Break from External Device, COM1"
+331,0,"Break from External Device, COM2"
+332,0,"Break from External Device, COM3"
+333,0,
+334,0,"GPRS Active, COM Port 1"
+335,0,"GPRS Active, COM Port 2"
+336,0,"GPRS Active, COM Port 3"
+337,0,"Modem Break: COM Port 1(V570, 290-C)"
+338,0,"Modem Break: COM Port 2 (V570, 290-C)"
+339,0,"Modem Break: COM Port 3 (V570, 290-C)"
+340,0,Log to SD in Progress
+341,0,Copy Data Table from PLC to SD Card in Progress
+342,0,Copy Data Table from SD Card to PLC in Progress
+343,0,SD: File Report in Progress
+344,0,SD: Write .csv delimited line to SD in Progress
+345,0,Email Send in Progress
+346,0,SD Data Block 0 Busy
+347,0,SD Data Block 1 Busy
+348,0,SD Data Block 2 Busy
+349,0,SD Data Block 3 Busy
+350,0,"Show Alarms on LCD (ON=Show, OFF=Hide)"
+351,0,Exit Alarm - Jump to Display
+352,0,SD: Write Alarm History to SD (OFF by default)
+353,0,
+354,0,
+355,0,
+356,0,
+357,0,
+358,0,SD: Delete File in Progress
+359,0,Folder Report Function in Progress
+360,0,
+361,0,
+362,0,
+363,0,
+364,0,
+365,0,
+366,0,Clone in Progress. Note that the process can take from several seconds to several minutes
+367,0,
+368,0,
+369,0,
+370,0,
+371,0,
+372,0,Burn DLUs to Flash |OFF by Default| Turn ON to burn DLUs to Flash| Reset by PLC after burn.
+373,0,
+374,0,
+375,0,
+376,0,
+377,0,
+378,0,
+379,0,
+380,0,
+381,0,
+382,0,
+383,0,
+384,0,
+385,0,
+386,0,
+387,0,
+388,0,
+389,0,
+390,0,
+391,0,
+392,0,
+393,0,
+394,0,
+395,0,
+396,0,
+397,0,
+398,0,
+399,0,"Ladder Utility Failure. When ON, the number of the failed utility is in SI 26."
+400,0,
+401,0,
+402,0,
+403,0,
+404,0,
+405,0,
+406,0,
+407,0,
+408,0,
+409,0,
+410,0,
+411,0,
+412,0,
+413,0,
+414,0,
+415,0,
+416,0,
+417,0,
+418,0,
+419,0,
+420,0,
+421,0,
+422,0,
+423,0,
+424,0,
+425,0,
+426,0,
+427,0,
+428,0,
+429,0,
+430,0,
+431,0,
+432,0,
+433,0,
+434,0,
+435,0,
+436,0,
+437,0,
+438,0,
+439,0,
+440,0,
+441,0,
+442,0,
+443,0,
+444,0,
+445,0,
+446,0,
+447,0,
+448,0,
+449,0,
+450,0,
+451,0,
+452,0,
+453,0,
+454,0,
+455,0,
+456,0,
+457,0,
+458,0,
+459,0,
+460,0,
+461,0,
+462,0,
+463,0,
+464,0,
+465,0,
+466,0,
+467,0,
+468,0,
+469,0,
+470,0,
+471,0,
+472,0,
+473,0,
+474,0,
+475,0,
+476,0,
+477,0,
+478,0,
+479,0,
+480,0,
+481,0,
+482,0,
+483,0,
+484,0,
+485,0,
+486,0,
+487,0,
+488,0,
+489,0,
+490,0,
+491,0,
+492,0,
+493,0,
+494,0,
+495,0,
+496,0,
+497,0,
+498,0,
+499,0,
+500,0,User RAM overlap warning
+501,0,Retain Inputs Forced Value after power failure
+502,0,
+503,0,
+504,0,
+505,0,
+506,0,
+507,0,
+508,0,
+509,0,
+510,0,
+511,0,
