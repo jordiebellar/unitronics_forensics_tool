@@ -2122,7 +2122,7 @@ def read_project_zip(ser, pcom_client, out = print) -> bytes:
     project_zip_data = do_read(ser=s, pcom_client=pcom, addr=addr, length=size, flag=res_id, out = out) # flag should be 1
     return project_zip_data
 
-def read_and_save_project_zip(ser, pcom_client, out = print) -> str:
+def read_and_save_project_zip(ser, pcom_client, filename: str | None = None, out = print) -> str:
     """
     Read the PLC project ZIP resource and save it to a local .zip file.
     
@@ -2133,7 +2133,7 @@ def read_and_save_project_zip(ser, pcom_client, out = print) -> str:
     """
     pcom = pcom_client
     s = ser
-    name = f"project_{int(time.time())}.zip"
+    name = filename or f"project_{int(time.time())}.zip"
     project_zip = read_project_zip(s, pcom, out = out)
     project_zip = project_zip[0x2a:]
     with open(name, "wb") as f:
@@ -2148,6 +2148,7 @@ def read_memory(
         start: int = 0, 
         end: int = 0x100000, 
         chunk_size: int = 0x1000_000,
+        filename: str | None = None,
         out = print
         ) -> str:
     """
@@ -2168,7 +2169,7 @@ def read_memory(
     """
     out(f"[-] Dumping RAM from address {hex(start)} to address {hex(end)} (flag={loc_type})")
     pcom = pcom_client
-    filename = f"ram_{hex(start)}_{hex(end)}_flag_{loc_type}_{int(time.time())}.bin"
+    filename = filename or f"ram_{hex(start)}_{hex(end)}_flag_{loc_type}_{int(time.time())}.bin"
 
     current_adr = start
     with open(filename, "wb") as f: 
@@ -2422,12 +2423,12 @@ def project_zip_dump(ser, pcom):
             f.write(payload)
         print(f"[-] Saved: {out}")
 
-def dump_system_integers_csv(ser, pcom_client, out = print) -> str | None:
+def dump_system_integers_csv(ser, pcom_client, filename: str | None = None, out = print) -> str | None:
     """
     """
 
     pcom = pcom_client
-    filename = f"si_dump_{int(time.time())}.csv"
+    filename = filename or f"si_dump_{int(time.time())}.csv"
     CHUNK = 64
     MAX_SI = 512
 
@@ -2454,12 +2455,12 @@ def dump_system_integers_csv(ser, pcom_client, out = print) -> str | None:
     out(f"[-] Saved: {filename}")
     return filename
 
-def dump_system_bits_csv(ser, pcom_client, out = print) -> str | None:
+def dump_system_bits_csv(ser, pcom_client, filename: str | None = None, out = print) -> str | None:
     """
     """
 
     pcom = pcom_client
-    filename = f"sb_dump_{int(time.time())}.csv"
+    filename = filename or f"sb_dump_{int(time.time())}.csv"
     CHUNK = 64
     MAX_SB = 512
 

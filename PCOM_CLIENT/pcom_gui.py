@@ -1,5 +1,14 @@
 import FreeSimpleGUI as sg
-from pcom_client import PCOM_CLIENT, auto_detect_plc, upload_auth, read_memory, read_and_save_project_zip
+import time
+from pcom_client import (
+    PCOM_CLIENT,
+    auto_detect_plc,
+    dump_system_bits_csv,
+    dump_system_integers_csv,
+    read_memory,
+    read_and_save_project_zip,
+    upload_auth,
+)
 
 
 
@@ -47,39 +56,80 @@ def ask_memory_dump():
     
     return None
 
+def add_extension(path, extension):
+    """
+    Add a default extension when the selected save path has none.
+    """
+    if not path:
+        return None
+    if "." not in path.split("\\")[-1].split("/")[-1]:
+        return f"{path}{extension}"
+    return path
+
+def ask_save_path(title, default_name, file_types, extension):
+    """
+    Popup an OS save-file dialog and normalize the selected filename.
+    """
+    filename = sg.popup_get_file(
+        title,
+        title = title,
+        save_as = True,
+        default_path = default_name,
+        file_types = file_types,
+        no_window = True,
+    )
+    return add_extension(filename, extension)
+
 def main_gui():
 
     sg.theme("DarkGrey14")
 
-    status_row = [sg.Text("Status: Scanning...", key = "-STATUS-", size = (50, 1))]
+    status_row = [
+        sg.Text("Status: Scanning...", key = "-STATUS-", size = (58, 1)),
+        sg.Checkbox("Debug mode", key = "-DEBUG-", default = False),
+    ]
 
-    button_row1 = [
-        sg.Button("PLC Name", size = (14, 2)),
-        sg.Button("Firmware", size = (14, 2)),
-        sg.Button("Unit ID", size = (14, 2)),
-        sg.Button("Signature Table", size = (14, 2)),
+    info_frame = sg.Frame(
+        "PLC Info",
+        [[
+            sg.Button("PLC Name", size = (15, 2)),
+            sg.Button("Firmware", size = (15, 2)),
+            sg.Button("Unit ID", size = (15, 2)),
+            sg.Button("Signature Table", size = (15, 2)),
+        ]],
+    )
 
-        ]
+    download_frame = sg.Frame(
+        "Downloads",
+        [
+            [
+                sg.Button("Save Project ZIP", key = "Read Project ZIP", size = (18, 2)),
+                sg.Button("Save Memory Dump", key = "Memory Dump", size = (18, 2)),
+            ],
+            [
+                sg.Button("Save SI CSV", key = "System Integers CSV", size = (18, 2)),
+                sg.Button("Save SB CSV", key = "System Bits CSV", size = (18, 2)),
+            ],
+        ],
+    )
 
-    button_row2 = [
-        sg.Button("Read Project ZIP", size = (14, 2)),
-        sg.Button("Memory Dump", size = (14, 2)),
-        sg.Button("Check Password", size = (14, 2)),
-        sg.Button("STOP PLC", size = (14, 2), button_color = ("white", "red")),
-        
-        ]
+    control_frame = sg.Frame(
+        "Controls",
+        [[
+            sg.Button("Check Password", size = (18, 2)),
+            sg.Button("STOP PLC", size = (18, 2), button_color = ("white", "red")),
+        ]],
+    )
 
-    log_row = [ sg.Multiline( size = (70, 20), key = "-LOG-", disabled = True, autoscroll = True, font = ("Courier New", 10), )]
-
-    debug_row = [sg.Checkbox("Debug mode", key = "-DEBUG-", default = False)]
+    log_row = [ sg.Multiline( size = (78, 22), key = "-LOG-", disabled = True, autoscroll = True, font = ("Courier New", 10), )]
             
 
     layout = [
         status_row,
-        button_row1,
-        button_row2,
+        [info_frame],
+        [download_frame],
+        [control_frame],
         log_row,
-        debug_row,
     ]
 
     ser = None
@@ -93,7 +143,7 @@ def main_gui():
 
     if result is None: 
         window["-STATUS-"].update("No PLC Found")
-        for btn in ["PLC Name","Firmware","Unit ID","Signature Table", "Read Project ZIP","Memory Dump","Check Password","STOP PLC"]:
+        for btn in ["PLC Name","Firmware","Unit ID","Signature Table", "Read Project ZIP","Memory Dump","System Integers CSV","System Bits CSV","Check Password","STOP PLC"]:
             window[btn].update(disabled = True)
     else:
         ser, pcom = result 
@@ -151,12 +201,22 @@ def main_gui():
                 log(window, f"[X] Error reading signature table: {e}")
                 
         elif event == "Read Project ZIP":
-            log(window, "[-] Reading project ZIP from PLC...")
-            try:
-                filename = read_and_save_project_zip(ser, pcom, out = gui_out)
-                log(window, f"[-] Saved project ZIP to: {filename}")
-            except Exception as e:
-                log(window, f"[X] Failed to read project ZIP: {e}")
+            default_name = f"project_{int(time.time())}.zip"
+            filename = ask_save_path(
+                "Save project ZIP",
+                default_name,
+                (("ZIP files", "*.zip"), ("All files", "*.*")),
+                ".zip",
+            )
+            if filename:
+                log(window, "[-] Reading project ZIP from PLC...")
+                try:
+                    saved = read_and_save_project_zip(ser, pcom, filename = filename, out = gui_out)
+                    log(window, f"[-] Saved project ZIP to: {saved}")
+                except Exception as e:
+                    log(window, f"[X] Failed to read project ZIP: {e}")
+            else:
+                log(window, "[-] Project ZIP save cancelled.")
 
         elif event == "Memory Dump":
             params = ask_memory_dump()
@@ -169,13 +229,57 @@ def main_gui():
                     if end <= start:
                         log(window, "[X] End address must be greater than start address.")
                     else:
-                        log(window, f"[-] Dumping {hex(start)}..{hex(end)} flag = {flag}...")
-                        filename = read_memory(ser, pcom, loc_type = flag, start = start, end = end, out = gui_out)
-                        log(window, f"[-] Saved a dump to: {filename}")
+                        default_name = f"ram_{hex(start)}_{hex(end)}_flag_{flag}_{int(time.time())}.bin"
+                        filename = ask_save_path(
+                            "Save memory dump",
+                            default_name,
+                            (("Binary files", "*.bin"), ("All files", "*.*")),
+                            ".bin",
+                        )
+                        if filename:
+                            log(window, f"[-] Dumping {hex(start)}..{hex(end)} flag = {flag}...")
+                            saved = read_memory(ser, pcom, loc_type = flag, start = start, end = end, filename = filename, out = gui_out)
+                            log(window, f"[-] Saved a dump to: {saved}")
+                        else:
+                            log(window, "[-] Memory dump save cancelled.")
                 except ValueError:
                     log(window, "[X] Invalid address")
                 except Exception as e:
                     log(window, f"[X] Memory dump failed: {e}")
+
+        elif event == "System Integers CSV":
+            default_name = f"si_dump_{int(time.time())}.csv"
+            filename = ask_save_path(
+                "Save System Integers CSV",
+                default_name,
+                (("CSV files", "*.csv"), ("All files", "*.*")),
+                ".csv",
+            )
+            if filename:
+                try:
+                    saved = dump_system_integers_csv(ser, pcom, filename = filename, out = gui_out)
+                    log(window, f"[-] Saved System Integers CSV to: {saved}")
+                except Exception as e:
+                    log(window, f"[X] Failed to save System Integers CSV: {e}")
+            else:
+                log(window, "[-] System Integers CSV save cancelled.")
+
+        elif event == "System Bits CSV":
+            default_name = f"sb_dump_{int(time.time())}.csv"
+            filename = ask_save_path(
+                "Save System Bits CSV",
+                default_name,
+                (("CSV files", "*.csv"), ("All files", "*.*")),
+                ".csv",
+            )
+            if filename:
+                try:
+                    saved = dump_system_bits_csv(ser, pcom, filename = filename, out = gui_out)
+                    log(window, f"[-] Saved System Bits CSV to: {saved}")
+                except Exception as e:
+                    log(window, f"[X] Failed to save System Bits CSV: {e}")
+            else:
+                log(window, "[-] System Bits CSV save cancelled.")
 
         elif event == "Check Password":
             pwd = ask_password()
