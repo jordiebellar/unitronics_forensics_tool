@@ -539,7 +539,7 @@ class PCOM_CLIENT:
 
 # CONSTRUCTOR
     
-    def __init__(self, isTcp: bool = False, debugMode: bool = False) -> None:
+    def __init__(self, isTcp: bool = False, debugMode: bool = False, out = print) -> None:
         """
         Create a PCOM client capable of building and parsing PCOM packets.
         
@@ -550,6 +550,7 @@ class PCOM_CLIENT:
         """
         self.isTcp = isTcp
         self.debugMode = debugMode
+        self.out = out
     
 # PCOM_CLIENT HELPER FUNCTIONS
 
@@ -587,8 +588,8 @@ class PCOM_CLIENT:
             direction = "Client <--- Server"
         else:
             direction = "Client ---> Server"
-        print(f"{direction}: Binary PCOM Command {opcode_message} ({hex(int.from_bytes(opcode, 'little'))})")
-        print(data)
+        self.out(f"{direction}: Binary PCOM Command {opcode_message} ({hex(int.from_bytes(opcode, 'little'))})")
+        self.out(data)
 
     
     def print_pcom_ascii(self, data: bytes) -> None:
@@ -619,8 +620,8 @@ class PCOM_CLIENT:
             opcode = data[3:5]
         
         opcode_message = opcode_table.get(opcode, "")
-        print(f"{direction}: ASCII PCOM Command {opcode_message} ({opcode.decode()})")
-        print(data)
+        self.out(f"{direction}: ASCII PCOM Command {opcode_message} ({opcode.decode()})")
+        self.out(data)
 
 
     def extract_pcom_data(self, data: bytes) -> bytes:

@@ -82,11 +82,14 @@ def main_gui():
         debug_row,
     ]
 
+    ser = None
+    pcom = None
     window = sg.Window("PCOM Terminal", layout, finalize = True, resizable = True)
+    gui_out = lambda msg: log(window, msg)
 
     window.refresh()
 
-    result = auto_detect_plc(log_fn = lambda msg: log(window, msg))
+    result = auto_detect_plc(log_fn = gui_out)
 
     if result is None: 
         window["-STATUS-"].update("No PLC Found")
@@ -94,6 +97,7 @@ def main_gui():
             window[btn].update(disabled = True)
     else:
         ser, pcom = result 
+        pcom.out = gui_out
         window["-STATUS-"].update(f"Connected: {ser.port} AT {ser.baudrate} baud")
 
     # EVENT LOOP
@@ -141,7 +145,7 @@ def main_gui():
             from pcom_client import print_signature_table
             log(window, "[-] Reading signature table...")
             try:
-                print_signature_table(ser, pcom, log_fn = lambda msg: log(window, msg))
+                print_signature_table(ser, pcom, log_fn = gui_out)
                 log(window, "[-] Signature table complete.")
             except Exception as e:
                 log(window, f"[X] Error reading signature table: {e}")
@@ -149,7 +153,7 @@ def main_gui():
         elif event == "Read Project ZIP":
             log(window, "[-] Reading project ZIP from PLC...")
             try:
-                filename = read_and_save_project_zip(ser, pcom)
+                filename = read_and_save_project_zip(ser, pcom, out = gui_out)
                 log(window, f"[-] Saved project ZIP to: {filename}")
             except Exception as e:
                 log(window, f"[X] Failed to read project ZIP: {e}")
@@ -166,7 +170,7 @@ def main_gui():
                         log(window, "[X] End address must be greater than start address.")
                     else:
                         log(window, f"[-] Dumping {hex(start)}..{hex(end)} flag = {flag}...")
-                        filename = read_memory(ser, pcom, loc_type = flag, start = start, end = end)
+                        filename = read_memory(ser, pcom, loc_type = flag, start = start, end = end, out = gui_out)
                         log(window, f"[-] Saved a dump to: {filename}")
                 except ValueError:
                     log(window, "[X] Invalid address")
@@ -177,7 +181,7 @@ def main_gui():
             pwd = ask_password()
             if pwd:
                 try:
-                    ok = upload_auth(ser, pcom, password = pwd)
+                    ok = upload_auth(ser, pcom, password = pwd, out = gui_out)
                     if ok: 
                         log(window, "[-] Password: OK - upload authorized.")
                     else:
