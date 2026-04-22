@@ -1572,7 +1572,7 @@ class PCOM_CLIENT:
             try:
                 decompressed_body = zlib.decompress(body[11:],-15)
                 out(f"\t\t[-] Decompressed Body: {len(decompressed_body)} bytes")
-                self.parse_decompressed(decompressed_body)
+                self.parse_decompressed(decompressed_body, out = out)
                 out(f"\t\t[-] Footer: {hex(footer)}")
             except Exception as e:
                 pass
@@ -1591,27 +1591,27 @@ class PCOM_CLIENT:
             # data[0x4:0xc] - PC Date
             pc_date_double, = struct.unpack('<d', data[0x4:0xc])
             pc_date = datetime.datetime(1899, 12, 30) + datetime.timedelta(pc_date_double)
-            print_body_info("PC Date", pc_date)
+            print_body_info("PC Date", pc_date, out = out)
 
             # data[0xc:0x1c] - GUID
             guid_tuple = struct.unpack('<IHH2s6s', data[0xc:0x1c])
             guid_first_part = '-'.join([hex(item).strip('0x').upper() for item in guid_tuple[:-2]])
             guid_second_part = f"{binascii.hexlify(guid_tuple[-2]).decode().upper()}-{binascii.hexlify(guid_tuple[-1]).decode().upper()}"
             guid = f"{{{guid_first_part}-{guid_second_part}}}"
-            print_body_info('GUID', guid)
+            print_body_info('GUID', guid, out = out)
 
             # data[0x1c:0x2c] - Username
-            print_body_info('User', data[0x1c:0x2c])
+            print_body_info('User', data[0x1c:0x2c], out = out)
 
             # data[0x2c:0x40] - Description
-            print_body_info('Description', data[0x2c:0x40])
+            print_body_info('Description', data[0x2c:0x40], out = out)
 
             # data[0x40:0x68] - Path
-            print_body_info('Path', data[0x40:0x68])
+            print_body_info('Path', data[0x40:0x68], out = out)
 
             # data[0x68:0x6a] - DB
             db, = struct.unpack('<H', data[0x68:0x6a])
-            print_body_info('DB', db)
+            print_body_info('DB', db, out = out)
 
             # data[0x6a:0x6c] - Version Created
             created, = struct.unpack('<H', data[0x6a:0x6c])
@@ -1623,7 +1623,7 @@ class PCOM_CLIENT:
             except Exception as e:
                 created_str = str(created)
             
-            print_body_info('Created Version', created_str)
+            print_body_info('Created Version', created_str, out = out)
             
             # data[0x6c:0x6e] - Modified Version
             modified, = struct.unpack('<H', data[0x6c:0x6e])
@@ -1635,7 +1635,7 @@ class PCOM_CLIENT:
             except Exception as e:
                 modified_str = str(modified)
             
-            print_body_info('Modified Version', modified_str)
+            print_body_info('Modified Version', modified_str, out = out)
 
             # data[0x6e:0x70] - Booleans bitmask
             features_bitmask, = struct.unpack('<H', data[0x6e:0x70])
@@ -1645,44 +1645,44 @@ class PCOM_CLIENT:
 
             # data[0x70:0x78] - Unk1/2
             unk1, unk2 = struct.unpack('<II', data[0x70:0x78])
-            print_body_info('Unk1 (0)', unk1)
-            print_body_info('Unk2 (0)', unk2)
+            print_body_info('Unk1 (0)', unk1, out = out)
+            print_body_info('Unk2 (0)', unk2, out = out)
 
             # data[0x78:0xb8] - All other integers
 
             info_table, ladder, ladder_data, page, misc_data, eDT_Reserved1, page_idx, eDT_Reserved2, variables, eDT_Reserved3, counters, functionBlocks, func_blocks_inst, timers, data_tables, hw_config, eDT_Reserved4 = struct.unpack('<'+'I'*17, data[0x78:0x78 + 4*17])
             
-            print_body_info(f'Info Tables Downloaded: {info_table_bit} (CRC={info_table})', None)
+            print_body_info(f'Info Tables Downloaded: {info_table_bit} (CRC={info_table})', None, out = out)
             
-            print_body_info(f'Ladder Downloaded: {ladder_bit} (CRC={ladder})', None)
+            print_body_info(f'Ladder Downloaded: {ladder_bit} (CRC={ladder})', None, out = out)
             
-            print_body_info(f'Ladder Data Downloaded: {ladder_data_bit} (CRC={ladder_data})', None)
+            print_body_info(f'Ladder Data Downloaded: {ladder_data_bit} (CRC={ladder_data})', None, out = out)
             
-            print_body_info(f'Page Downloaded: {page_bit} (CRC={page})', None)
+            print_body_info(f'Page Downloaded: {page_bit} (CRC={page})', None, out = out)
             
-            print_body_info(f'Misc.Data Downloaded: {misc_data_bit} (CRC={misc_data})', None)
+            print_body_info(f'Misc.Data Downloaded: {misc_data_bit} (CRC={misc_data})', None, out = out)
             
-            print_body_info(f'eDT_Reserved1 Downloaded: {eDT_Reserved1_bit} (CRC={eDT_Reserved1})', None)
+            print_body_info(f'eDT_Reserved1 Downloaded: {eDT_Reserved1_bit} (CRC={eDT_Reserved1})', None, out = out)
             
-            print_body_info(f'Pages->Idx Downloaded: {page_idx_bit} (CRC={page_idx})', None)
+            print_body_info(f'Pages->Idx Downloaded: {page_idx_bit} (CRC={page_idx})', None, out = out)
             
-            print_body_info(f'eDT_Reserved2 Downloaded: {eDT_Reserved2_bit} (CRC={eDT_Reserved2})', None)
+            print_body_info(f'eDT_Reserved2 Downloaded: {eDT_Reserved2_bit} (CRC={eDT_Reserved2})', None, out = out)
             
-            print_body_info(f'Variables Downloaded: {variables_bit} (CRC={variables})', None)
+            print_body_info(f'Variables Downloaded: {variables_bit} (CRC={variables})', None, out = out)
             
-            print_body_info(f'eDT_Reserved3 Downloaded: {eDT_Reserved3_bit} (CRC={eDT_Reserved3})', None)
+            print_body_info(f'eDT_Reserved3 Downloaded: {eDT_Reserved3_bit} (CRC={eDT_Reserved3})', None, out = out)
             
-            print_body_info(f'Counters Downloaded: {counters_bit} (CRC={counters})', None)
+            print_body_info(f'Counters Downloaded: {counters_bit} (CRC={counters})', None, out = out)
             
-            print_body_info(f'FunctionBlocks Downloaded: {functionBlocks_bit} (CRC={functionBlocks})', None)
+            print_body_info(f'FunctionBlocks Downloaded: {functionBlocks_bit} (CRC={functionBlocks})', None, out = out)
             
-            print_body_info(f'Function Blocks Instance Downloaded: {func_blocks_inst_bit} (CRC={func_blocks_inst})', None)
+            print_body_info(f'Function Blocks Instance Downloaded: {func_blocks_inst_bit} (CRC={func_blocks_inst})', None, out = out)
             
-            print_body_info(f'Timers Downloaded: {timers_bit} (CRC={timers})', None)
+            print_body_info(f'Timers Downloaded: {timers_bit} (CRC={timers})', None, out = out)
             
-            print_body_info(f'Data Tables Downloaded: {data_tables_bit} (CRC={data_tables})', None)
+            print_body_info(f'Data Tables Downloaded: {data_tables_bit} (CRC={data_tables})', None, out = out)
             
-            print_body_info(f'HW Configuration Downloaded: {hw_config_bit} (CRC={hw_config})', None)
+            print_body_info(f'HW Configuration Downloaded: {hw_config_bit} (CRC={hw_config})', None, out = out)
             
             # data[0xbc:0xcc] - Connection info
             conn_info = data[0xbc:0xcc]
@@ -1701,9 +1701,9 @@ class PCOM_CLIENT:
                 conn_info_general = f"Unknown (type {conn_info_type})"
                 conn_info_details = conn_info[1:].hex()
             
-            print_body_info('Connection Info General', conn_info_general)
+            print_body_info('Connection Info General', conn_info_general, out = out)
             
-            print_body_info('Connection Info Details', conn_info_details)
+            print_body_info('Connection Info Details', conn_info_details, out = out)
 
             # data[0xcd:0xce] - PLC Reset Event
             plc_reset_event, = struct.unpack("<B", data[0xcd:0xce])
@@ -1720,11 +1720,11 @@ class PCOM_CLIENT:
                 9: "User",
             }
             plc_reset_event_desc = PLC_RESET_DICT.get(plc_reset_event, f"Unknown") + f" (type {hex(plc_reset_event)})"
-            print_body_info('PLC Reset', plc_reset_event_desc)
+            print_body_info('PLC Reset', plc_reset_event_desc, out = out)
 
             # data[0xd4:0xd8] - UnitID
             unitid, = struct.unpack("<I", data[0xd4:0xd8])
-            print_body_info('Unit ID', unitid)
+            print_body_info('Unit ID', unitid, out = out)
 
             #data[0xe4:0xe8] - User OS
             pc_os_type, = struct.unpack("<f", data[0xe4:0xe8])
@@ -1740,39 +1740,39 @@ class PCOM_CLIENT:
                 pc_os_desc = "Windows Unknown"
 
             pc_os_desc = f"{pc_os_desc} (type {pc_os_type})"
-            print_body_info('PC OS', pc_os_desc)
+            print_body_info('PC OS', pc_os_desc, out = out)
 
             # data[0xe8:0x128] - User Computer Langauge
             language = data[0xe8:0x128]
-            print_body_info('Language', language)
+            print_body_info('Language', language, out = out)
 
             # data[0x128:0x138] - PLC Model
             plc_model = data[0x128:0x138]
-            print_body_info('PLC Model', plc_model)
+            print_body_info('PLC Model', plc_model, out = out)
             
             # data[0x138:0x148] - PLC Boot Version
             boot = data[0x138:0x148]
-            print_body_info('Boot', boot)
+            print_body_info('Boot', boot, out = out)
 
             # data[0x148:0x158] - PLC Bin Lib Version
             bin_lib = data[0x148:0x158]
-            print_body_info('BinLib', bin_lib)
+            print_body_info('BinLib', bin_lib, out = out)
 
             # data[0x158:0x168] - PLC Factory Boot Version
             factory_boot = data[0x158:0x168]
-            print_body_info('Factory Boot', factory_boot)
+            print_body_info('Factory Boot', factory_boot, out = out)
 
             # data[0x168:0x16c] - User Connection Timeout
             timeout_ms, = struct.unpack("<I", data[0x168:0x16c])
-            print_body_info('Timeout (ms)', timeout_ms)
+            print_body_info('Timeout (ms)', timeout_ms, out = out)
 
             # data[0x16c:0x170] - User Connection Retry Count
             retry_count, = struct.unpack("<I", data[0x16c:0x170])
-            print_body_info('Retry Count', retry_count)
+            print_body_info('Retry Count', retry_count, out = out)
 
             # data[0x170:] - Download Type
             download_type = data[0x170:]
-            print_body_info('Download Type', download_type)
+            print_body_info('Download Type', download_type, out = out)
 
         except struct.error as e:
             out(f"\t\t{WARNING}[x] Warning: Struct failed to unpack a field.{ENDC}")
@@ -1864,7 +1864,7 @@ class PCOM_CLIENT:
 
 # OUTSIDE OF PCOM_CLIENT CLASS
 
-def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size:int = 976) -> bytes:
+def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size:int = 976, out = print) -> bytes:
     """
     Read a section of PLC memory in chunks and return the concatenated bytes.
     
@@ -1886,7 +1886,7 @@ def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size:int =
     res = b""
 
     while read_bytes < length:
-        print(f"\r[-] Reading from address: {hex(addr)} ({(read_bytes/length)*100:.2f}%)      ", end="")
+        out(f"[-] Reading from address: {hex(addr)} ({(read_bytes/length)*100:.2f}%)")
         size = min(read_size, length - read_bytes) #checks to see if the size of the memory to be read will be the read size of 976 or the remaining memory to be read
         read_mem = pcom.create_read_memory(struct.pack("<I", addr), size, flag = flag) #Creates the command
         ser.write(read_mem) #Sends command
@@ -1895,12 +1895,11 @@ def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size:int =
         resp = ser.read(1024*5)
         res += pcom.extract_pcom_data(resp)
     
-    print(f"\r[-] Read is completed (100%)                                                    ", end="")
-    print("")
+    out(f"[-] Read is completed (100%)")
     
     return res
 
-def do_write(ser, pcom_client, addr: int, data: bytes, flag: int) -> None:
+def do_write(ser, pcom_client, addr: int, data: bytes, flag: int, out = print) -> None:
     """
     Write a contiguous bytes buffer into PLC memory in chunks.
     
@@ -1919,7 +1918,7 @@ def do_write(ser, pcom_client, addr: int, data: bytes, flag: int) -> None:
     length = len(data)
     
     while write_bytes < length:
-        print(f"\r[-] Writing to address: {hex(addr)} ({(write_bytes/length)*100:.2f}%)      ", end="")
+        out(f"[-] Writing to address: {hex(addr)} ({(write_bytes/length)*100:.2f}%)")
         size = min(write_size, length-write_bytes)
         current_data_chunk = data[write_bytes:write_bytes+size]
         write_mem = pcom.create_write_memory(struct.pack("<I", addr), size, current_data_chunk, flag=flag)
@@ -1929,11 +1928,9 @@ def do_write(ser, pcom_client, addr: int, data: bytes, flag: int) -> None:
         resp = ser.read(1024*5)
         pcom.extract_pcom_data(resp)
     
-    print(f"\r[-] Write is completed (100%)                                                    ", end="")
-    
-    print("")
+    out(f"[-] Write is completed (100%)")
 
-def print_firmware_version(data) -> None:
+def print_firmware_version(data, out = print) -> None:
     """
     Pretty-print PLC model and firmware version information.
     
@@ -1941,11 +1938,11 @@ def print_firmware_version(data) -> None:
     """
     
     if type(data) in [bytes, str]:
-        print(f"\t[-] Unknown Model (model: {data})")
+        out(f"\t[-] Unknown Model (model: {data})")
     
     else:
-        print("\t[-] Model: " + data.get("model_desc"))
-        print("\t[-] HW Rev: " + data.get("hw_rev"))
+        out("\t[-] Model: " + data.get("model_desc"))
+        out("\t[-] HW Rev: " + data.get("hw_rev"))
         is_ft_exists = False
     
         for fw_ver in data["fw_ver"]:
@@ -1953,14 +1950,14 @@ def print_firmware_version(data) -> None:
             if fw_ver_type == "FT":
                 is_ft_exists = True
             fw_ver_version = fw_ver.get("version")
-            print(f"\t[-] {PCOM_CLIENT.FW_TYPE_TO_NAME.get(fw_ver_type,fw_ver_type)}: {fw_ver_version}")
+            out(f"\t[-] {PCOM_CLIENT.FW_TYPE_TO_NAME.get(fw_ver_type,fw_ver_type)}: {fw_ver_version}")
     
         if not is_ft_exists and len(data.get("leftover","")) == 8:
             binlib_ver_full = data.get("leftover")
             binlib_ver = f"{binlib_ver_full[0:1]}-{binlib_ver_full[1:2]}.{binlib_ver_full[2:4]} ({binlib_ver_full[4:8]})"
-            print("\t[-] BinLib: " + binlib_ver)    
+            out("\t[-] BinLib: " + binlib_ver)    
 
-def print_plc_name(ser, pcom_client) -> None:
+def print_plc_name(ser, pcom_client, out = print) -> None:
     """
     Query and print the PLC's configured name.
     
@@ -1975,9 +1972,9 @@ def print_plc_name(ser, pcom_client) -> None:
     # <-- (B) Get Name Res (8c)
     resp = s.read(1024*5)
     plc_name = pcom.parse_read_plc_name(resp)
-    print(f"\t[-] PLC Name: {plc_name.decode('windows-1252', errors = 'replace')}")
+    out(f"\t[-] PLC Name: {plc_name.decode('windows-1252', errors = 'replace')}")
 
-def print_plc_firmware(ser, pcom_client) -> None:
+def print_plc_firmware(ser, pcom_client, out = print) -> None:
     """
     Query and print the PLC's model and firmware versions.
     
@@ -1992,9 +1989,9 @@ def print_plc_firmware(ser, pcom_client) -> None:
     # <-- (A) Get Versions Res (ID)
     resp = s.read(1024*5)
     firmware_version_raw = pcom.parse_version(resp)
-    print_firmware_version(firmware_version_raw)
+    print_firmware_version(firmware_version_raw, out = out)
 
-def print_plc_unitid(ser, pcom_client) -> None:
+def print_plc_unitid(ser, pcom_client, out = print) -> None:
     """
     Query and print the PLC Unit ID.
     
@@ -2009,7 +2006,7 @@ def print_plc_unitid(ser, pcom_client) -> None:
     # <-- (A) Get UnitID (UG) Res  (UG)
     resp = s.read(1024*5)
     unitId = pcom.parse_read_unitID(resp)
-    print(f"\t[-] UnitID: {unitId.decode()}")
+    out(f"\t[-] UnitID: {unitId.decode()}")
 
 def print_signature_table(ser, pcom_client, log_fn = None) -> None:
     """
@@ -2102,10 +2099,10 @@ def print_signature_table(ser, pcom_client, log_fn = None) -> None:
     # --> (B) Read Signature Table Memory Req  (01)
     # <-- (B) Read Signature Table Memory Res  (81) - Check
     addr = struct.unpack("<I", sigTable_address)[0]
-    sig_table_data = do_read(ser=s, pcom_client=pcom,addr=addr, length=sigTable_size, flag=4)
-    sigTable = pcom.parse_signature(sig_table_data)
+    sig_table_data = do_read(ser=s, pcom_client=pcom,addr=addr, length=sigTable_size, flag=4, out = out)
+    sigTable = pcom.parse_signature(sig_table_data, out = out)
 
-def read_project_zip(ser, pcom_client) -> bytes:
+def read_project_zip(ser, pcom_client, out = print) -> bytes:
     """
     Locate and read the PLC project ZIP resource from PLC memory.
     
@@ -2120,11 +2117,11 @@ def read_project_zip(ser, pcom_client) -> bytes:
     s.write(where_resource_id_req)
     resp = s.read(1024*5)
     addr, size, res_id = pcom.parse_where_resource(resp)
-    print(f"[-] Reading project file from {hex(addr)} with size {hex(size)}")
-    project_zip_data = do_read(ser=s, pcom_client=pcom, addr=addr, length=size, flag=res_id) # flag should be 1
+    out(f"[-] Reading project file from {hex(addr)} with size {hex(size)}")
+    project_zip_data = do_read(ser=s, pcom_client=pcom, addr=addr, length=size, flag=res_id, out = out) # flag should be 1
     return project_zip_data
 
-def read_and_save_project_zip(ser, pcom_client) -> str:
+def read_and_save_project_zip(ser, pcom_client, out = print) -> str:
     """
     Read the PLC project ZIP resource and save it to a local .zip file.
     
@@ -2136,11 +2133,11 @@ def read_and_save_project_zip(ser, pcom_client) -> str:
     pcom = pcom_client
     s = ser
     name = f"project_{int(time.time())}.zip"
-    project_zip = read_project_zip(s, pcom)
+    project_zip = read_project_zip(s, pcom, out = out)
     project_zip = project_zip[0x2a:]
     with open(name, "wb") as f:
         f.write(project_zip)
-
+    out(f"[-] Saved project ZIP to: {name}")
     return name
 
 def read_memory(
@@ -2149,7 +2146,8 @@ def read_memory(
         loc_type: int = 1, 
         start: int = 0, 
         end: int = 0x100000, 
-        chunk_size: int = 0x1000_000
+        chunk_size: int = 0x1000_000,
+        out = print
         ) -> str:
     """
     Dump a region of PLC memory to a binary file.
@@ -2167,9 +2165,7 @@ def read_memory(
     :return: filename of saved dump
     :rtype: str
     """
-    print("dumping memory")
-    print(f"[-] Dumping RAM from address {hex(start)} to address {hex(end)} (flag={loc_type})")
-    
+    out(f"[-] Dumping RAM from address {hex(start)} to address {hex(end)} (flag={loc_type})")
     pcom = pcom_client
     filename = f"ram_{hex(start)}_{hex(end)}_flag_{loc_type}_{int(time.time())}.bin"
 
@@ -2179,15 +2175,15 @@ def read_memory(
               next_addr = min(current_adr + chunk_size, end) #checks to see if the next address will be the next 16 Mbytes or just to the end address
               length = next_addr - current_adr
 
-              data = do_read(ser, pcom, addr = current_adr, length = length, flag = loc_type)
+              data = do_read(ser, pcom, addr = current_adr, length = length, flag = loc_type, out = out)
               f.write(data)
 
               current_adr = next_addr
 
-    print(f"[-] Saved dump to: {filename}")
+    out(f"[-] Saved dump to: {filename}")
     return filename
 
-def write_memory(ser, pcom_client, addr: int, data: bytes, loc_type: int = 1) -> None:
+def write_memory(ser, pcom_client, addr: int, data: bytes, loc_type: int = 1, out = print) -> None:
     """
     Write a bytes buffer into PLC memory.
     
@@ -2200,10 +2196,10 @@ def write_memory(ser, pcom_client, addr: int, data: bytes, loc_type: int = 1) ->
     :param loc_type: PLC memory/region selector
     :type loc_type: int
     """
-    print(f"[-] Writing memory from from address {hex(addr)} with size {hex(len(data))} (flag={loc_type})")
-    do_write(ser, pcom_client, addr, data, loc_type)
+    out(f"[-] Writing memory from from address {hex(addr)} with size {hex(len(data))} (flag={loc_type})")
+    do_write(ser, pcom_client, addr, data, loc_type, out = out)
 
-def upload_auth(ser, pcom_client, password: str = PASSWORD_DEFAULT) -> bool:
+def upload_auth(ser, pcom_client, password: str = PASSWORD_DEFAULT, out = print) -> bool:
     """
     Check whether a password grants upload/write authorization on the PLC.
     
@@ -2216,7 +2212,7 @@ def upload_auth(ser, pcom_client, password: str = PASSWORD_DEFAULT) -> bool:
     """
     s = ser
     pcom = pcom_client
-    print(f"[-] Trying to check upload_auth with password: '{password}'")
+    out(f"[-] Trying to check upload_auth with password: '{password}'")
     # --> (B) Opcode 0x02 Req
     req_pass = pcom.create_check_password_request(password)
     s.write(req_pass)
@@ -2224,10 +2220,10 @@ def upload_auth(ser, pcom_client, password: str = PASSWORD_DEFAULT) -> bool:
     resp = s.read(1024*5)
     is_ok = pcom.parse_check_password(resp)
     if is_ok:
-        print(f"\t[-] Password: OK")
+        out(f"\t[-] Password: OK")
         return True
     else:
-        print(f"\t[-] Password: Bad")
+        out(f"\t[-] Password: Bad")
         return False
     
 SB_DESTRUCTIVE = {24, 300, 314} # Can do bad things
@@ -2455,6 +2451,7 @@ def dump_system_integers_csv(ser, pcom_client, out = print) -> str | None:
                 writer.writerow([addr, val, label])
     
     out(f"[-] Saved: {filename}")
+    return filename
 
 def dump_system_bits_csv(ser, pcom_client, out = print) -> str | None:
     """
