@@ -590,8 +590,7 @@ class PCOM_CLIENT:
             direction = "Client ---> Server"
         self.out(f"{direction}: Binary PCOM Command {opcode_message} ({hex(int.from_bytes(opcode, 'little'))})")
         self.out(data)
-
-    
+  
     def print_pcom_ascii(self, data: bytes) -> None:
         """
         Pretty print a summary of an ASCII PCOM packet.
@@ -623,7 +622,6 @@ class PCOM_CLIENT:
         self.out(f"{direction}: ASCII PCOM Command {opcode_message} ({opcode.decode()})")
         self.out(data)
 
-
     def extract_pcom_data(self, data: bytes) -> bytes:
         """
         Extract the payload from a binary PCOM response frame.
@@ -642,7 +640,6 @@ class PCOM_CLIENT:
             self.print_pcom_binary(data)
         return data[self.PCOM_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
 
-    
     def make_tcp(self,data: bytes, isAscii: bool = False) -> bytes:
         """
         Wrap a raw PCOM frame inside the Unitronics PCOM/TCP header.
@@ -682,8 +679,7 @@ class PCOM_CLIENT:
         """
         # Packet[0:22]
         return struct.pack("<H", (( ~ (sum(data[0:22]) % 0x10_000) + 1 ) % 0xffff + 1))
-
-        
+   
     def calc_binary_footer_crc(self, data: bytes) -> bytes:
         """
         Compute the 16-bit checksum for the binary PCOM payload section.
@@ -703,7 +699,6 @@ class PCOM_CLIENT:
         """
         # Packet[24:-3]
         return struct.pack("<H", (( ~ (sum(data[self.PCOM_HEADER_SIZE:]) % 0x10_000) + 1 ) % 0xffff + 1))
-
 
     def calc_ascii_crc(self, data: bytes) -> bytes:
         """
@@ -792,6 +787,33 @@ class PCOM_CLIENT:
         
         return packet
     
+# ASCII PCOM REQUEST FACTORY (JORDIE)
+
+    def _build_ascii_request(self, opcode: bytes, payload: bytes = b"") -> bytes:
+        """
+        Build a complete ASCII PCOM request frame.
+
+        :param opcode: ASCII opcode
+        :type opcode: bytes
+        :param payload: opcode-specific bytes
+        :type payload: bytes
+        :return: complete ASCII PCOM request frame
+        :rtype: bytes
+        """
+
+        request = self.ascii_header_magic # /
+        request += b"00"                  # Unit ID
+        request += opcode
+        request += payload
+        request += self.calc_ascii_crc(request)
+        request += self.ascii_suffix
+
+        if self.debugMode:
+            self.print_pcom_ascii(request)
+        if self.isTcp:
+            return self.make_tcp(request, isAscii = True)
+        return request
+
 # READ PLC NAME
 
     # Binary Request
@@ -942,38 +964,25 @@ class PCOM_CLIENT:
         res["leftover"] = leftovers
         return res
 
-# READ SYSTEM INTEGERS
+# READ SYSTEM INTEGERS (JORDIE)
 
-    # ASCII Request
+    # ASCII Request 
 
     def create_read_system_integers(self, start: int = 0, count: int = 64) -> bytes:
         """
         Build an ASCII PCOM request to read system integers from the PLC.
         
-        :param start:
-        :type start:
-        :param count:
-        :type count:
+        :param start: starting address of read
+        :type start: int
+        :param count: how many addresses to read
+        :type count: int
         :return: the complete ASCII PCOM request frame as bytes
         :rtype: bytes
         """
-        request = self.ascii_header_magic # Magic "/"
-        request += b"00" # Unit ID (00 const)
-        request += b"GF" # Opcode 
-        request += f"{start:04X}".encode() # Address
-        request += f"{count:02X}".encode() # Length
-        request += self.calc_ascii_crc(request)
-        request += self.ascii_suffix
-
-        if self.debugMode:
-            self.print_pcom_ascii(request)
-        
-        if self.isTcp:
-            return self.make_tcp(request, isAscii=True)
-        
-        return request
+        payload = f"{start:04X}{count:02X}".encode()        
+        return self._build_ascii_request(b"GF", payload)
     
-    # ASCII RESPONSE (JORDIE)
+    # ASCII RESPONSE
 
     def parse_read_system_integers(self, data: bytes) -> list[int] | None:
         """
@@ -1012,7 +1021,7 @@ class PCOM_CLIENT:
             results.append(raw)
         return results
     
-# READ SYSTEM BITS
+# READ SYSTEM BITS (JORDIE)
 
     # ASCII Request
 
@@ -1020,28 +1029,15 @@ class PCOM_CLIENT:
         """
         Build an ASCII PCOM request to read system bits from the PLC.
         
-        :param start:
-        :type start:
-        :param count:
-        :type count:
+        :param start: the address to begin the read
+        :type start: int
+        :param count: how many addresses to read
+        :type count: int
         :return: the complete ASCII PCOM request frame as bytes
         :rtype: bytes
         """
-        request = self.ascii_header_magic # Magic "/"
-        request += b"00" # Unit ID (00 const)
-        request += b"GS" # Opcode 
-        request += f"{start:04X}".encode() # Address
-        request += f"{count:02X}".encode() # Length
-        request += self.calc_ascii_crc(request)
-        request += self.ascii_suffix
-
-        if self.debugMode:
-            self.print_pcom_ascii(request)
-        
-        if self.isTcp:
-            return self.make_tcp(request, isAscii=True)
-        
-        return request
+        payload = f"{start:04X}{count:02X}".encode()
+        return self._build_ascii_request(b"GS", payload)
     
     # ASCII Response
 
@@ -1077,53 +1073,168 @@ class PCOM_CLIENT:
             results.append(ch == '1')
         return results
     
-# WRITE SYSTEM INTEGERS
+# READ MEMORY BITS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_memory_bits(self, start: int = 0, count: int = 255) -> bytes:
+        """
+        Build an ASCII PCOM read memory bits request.
+
+        :param start: address where read starts
+        :type start: int
+        :param count: number of addresses to read
+        :type count: int
+        :return: complete ASCII PCOM request frame
+        :rtype: bytes
+        """
+        payload = f"{start:04X}{count:02X}".encode()
+        return self._build_ascii_request(b"RB", payload)
+
+    # ASCII Response
+
+    def parse_read_memory_bits(self, data: bytes) -> list[bool] | None:
+        """
+        Parse an ASCII PCOM read memory bits response into a list.
+
+        :param data: raw bytes recieved from PLC
+        :type data: bytes
+        :return: list of bool values or None
+        :rtype: list[bool] | None
+        """
+
+        if self.isTcp:
+            data = data[self.PCOM_TCP_HEADER_SIZE:]
+        if self.debugMode:
+            self.print_pcom_ascii(data)
+        try:
+            text = data.decode("ascii", errors = "replace")
+        except Exception:
+            return None
+        payload = text[self.PCOM_TCP_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
+        if not payload:
+            return None
+        results = []
+        for ch in payload:
+            if ch not in ('0', '1'):
+                return None
+            results.append(ch == '1')
+        return results
+
+# READ MEMORY INTEGERS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_memory_integers(self, start: int = 0, count: int = 64) -> bytes:
+        """
+        Build an ASCII PCOM read memory integers request.
+
+        :param start: starting address to read
+        :type start: int
+        :param count: number of addresses to read
+        :type count: int
+        :return: a complete ASCII PCOM request frame
+        :rtype: bytes
+        """
+        payload = f"{start:04X}{count:02X}".encode()
+        return self._build_ascii_request(b"RW", payload)
+
+    # ASCII Response
+
+    def parse_read_memory_integers(self, data: bytes) -> list[int] | None:
+        """
+        Parse an ASCII PCOM read memory integers request into a list.
+
+        :param data: the raw bytes received from the PLC
+        :type data: bytes
+        :return: a list of int or None
+        :rtype: list[int] | None
+        """
+        if self.isTcp:
+            data = data[self.PCOM_TCP_HEADER_SIZE:]
+        if self.debugMode:
+            self.print_pcom_ascii(data)
+        try:
+            text = data.decode("ascii", errors = "replace")
+        except Exception:
+            return None
+        payload = text[self.PCOM_TCP_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
+        if not payload or len(payload) % 4 != 0:
+            return None
+        results = []
+        for i in range(0, len(payload), 4):
+            try:
+                raw = int(payload[i: i+4], 15)
+            except ValueError:
+                return None
+            if raw >= 0x8000:
+                raw -= 0x10000
+            results.append(raw)
+        return results
+
+# READ MEMORY LONGS (JORDIE)
+
+    # ASCII Request
+
+    # ASCII Response
+
+# READ MEMORY DOUBLE WORDS (JORDIE)
+
+    # ASCII Request
+
+    # ASCII Response
+
+# READ MEMORY FLOATS (JORDIE)
+
+    # ASCII Request
+
+    # ASCII Response
+
+# READ SYSTEM LONGS (JORDIE)
+
+    # ASCII Request
+
+    # ASCII Response
+
+# READ SYSTEM DOUBLE WORDS (JORDIE)
+
+    # ASCII Request
+
+    # ASCII Response
+
+# WRITE SYSTEM INTEGERS (JORDIE)
 
     # ASCII Request
 
     def create_write_system_integer(self, address: int, value: int) -> bytes:
         """
+        Build an ASCII PCOM request to write to the system integers.
+
+        :param address: the address to write to
+        :type address: int
+        :param value: the value to write to the address
+        :type value: int
+        :return: the complete ASCII PCOM request
+        :rtype: bytes
         """
-        request = self.ascii_header_magic
-        request += b"00"
-        request += b"SF"
-        request += f"{address:04X}".encode()
-        request += b"01"
-        request += f"{value & 0xFFFF:04X}".encode()
-        request += self.calc_ascii_crc(request)
-        request += self.ascii_suffix
-
-        if self.debugMode:
-            self.print_pcom_ascii(request)
-
-        if self.isTcp:
-            return self.make_tcp(request, isAscii = True)
-        
-
-        return request
+        payload = f"{address:04X}01{value & 0xFFFF:04X}".encode()
+        return self._build_ascii_request(b"SF", payload)
     
-# WRITE SYSTEM BITS
+# WRITE SYSTEM BITS (JORDIE)
 
     def create_write_system_bit(self, address: int, value: bool) -> bytes:
         """
+        Build an ASCII PCOM request to write to the system bits.
+
+        :param address: the address to write to
+        :type address: int
+        :param value: the value to write to the address
+        :type value: int
+        :return: the complete ASCII PCOM request
+        :rtype: bytes
         """
-
-        request = self.ascii_header_magic
-        request += b"00"
-        request += b"SS"
-        request += f"{address:04X}".encode()
-        request += b"01"
-        request += b"1" if value else b"0"
-        request += self.calc_ascii_crc(request)
-        request += self.ascii_suffix
-
-        if self.debugMode:
-            self.print_pcom_ascii(request)
-
-        if self.isTcp:
-            return self.make_tcp(request, isAscii = True)
-        
-        return request
+        payload = f"{address:04X}01".encode() + (b"1" if value else b"0")
+        return self._build_ascii_request(b"SS", payload)
 
 # READ OPERAND *** IGNORE RESPONSE LATER? *** *** PARSE IS NOT IMPLEMENTED ***
 
@@ -1424,7 +1535,6 @@ class PCOM_CLIENT:
             res3 = res3
             )
 
-
     # Binary Response
     def parse_translate_index(self, data: bytes) -> tuple[bytes, int] | int:
         """
@@ -1578,7 +1688,6 @@ class PCOM_CLIENT:
             except Exception as e:
                 pass
     
-
     def parse_decompressed(self, data: bytes, out = print) -> None:
         """
         Parse and print fields from a decompressed signature metadata blob.
@@ -1802,7 +1911,6 @@ class PCOM_CLIENT:
             command_data = password, 
             res3 = res3
             )
-
 
     # Binary Response
     def parse_check_password(self, data: bytes) -> bool:
@@ -2330,7 +2438,6 @@ def prompt_int(prompt: str, default: int | None = None) -> int:
         except ValueError:
             print(f"{WARNING}[X] Please enter a valid integer.{ENDC}")
 
-
 def prompt_str(prompt: str, default: str | None = None) -> str:
     """
     Prompt the user for a string value.
@@ -2345,7 +2452,6 @@ def prompt_str(prompt: str, default: str | None = None) -> str:
     suffix = f" [default: {default}]" if default is not None else ""
     raw = input(f"{prompt}{suffix}: ").strip()
     return raw if raw else (default or "")
-
 
 def prompt_yes_no(prompt: str, default: bool = False) -> bool:
     """
@@ -2363,7 +2469,6 @@ def prompt_yes_no(prompt: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in ("y", "yes")
-
 
 def dump_one_file(ser, pcom):
     """
@@ -2396,7 +2501,6 @@ def dump_one_file(ser, pcom):
             cur = nxt
 
     print(f"[-] Saved dump to: {out}")
-
 
 def project_zip_dump(ser, pcom):
     """
@@ -2488,7 +2592,6 @@ def dump_system_bits_csv(ser, pcom_client, filename: str | None = None, out = pr
     out(f"[-] Saved: {filename}")
     return filename
 
-
 def auth(ser, pcom):
     """
     Test the PLC upload/write password.
@@ -2499,7 +2602,6 @@ def auth(ser, pcom):
     pwd = prompt_str("Password (8 chars, will be padded/truncated)", "*" * 8)
     ok = upload_auth(ser, pcom, password=pwd)
     print("[-] Auth result:", "OK" if ok else "BAD")
-
 
 def stop_plc(ser, pcom):
     """
@@ -2588,7 +2690,6 @@ def main() -> None:
             ser.close()
         except Exception:
             pass
-
-     
+ 
 if __name__ == "__main__":
     main()
