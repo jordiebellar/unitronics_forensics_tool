@@ -30,7 +30,10 @@ def load_csv(path: Path) -> dict:
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            result[int(row["address"])] = row["value"]
+            try:
+                result[int(row["address"])] = row["value"]
+            except (KeyError, ValueError) as e:
+                print(f"[X] Skipping bad row in {path.name}: {row} — {e}")
     return result
 
 def delta(a, b, dtype: str) -> str:

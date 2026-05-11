@@ -839,7 +839,7 @@ class PCOM_CLIENT:
         if not payload or len(payload) % 8 != 0:
             return None
         results = []
-        for i in range(0, len(paylaod), 8):
+        for i in range(0, len(payload), 8):
             chunk = payload[i:i+8]
             try:
                 if mode == "float":
@@ -2740,7 +2740,7 @@ def dump_system_integers_csv(ser, pcom_client, filename: str | None = None, out 
 
     with open(filename, "w", newline = "") as f:
         writer = csv.writer(f)
-        writer.writerow(["address", "decimal", "description"])
+        writer.writerow(["address", "value", "description"])
 
         for start in range(0, MAX_SI, CHUNK):
             count = min(CHUNK, MAX_SI - start)

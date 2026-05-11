@@ -137,7 +137,10 @@ def main_gui():
     ser = None
     pcom = None
     window = sg.Window("PCOM Terminal", layout, finalize = True, resizable = True)
-    gui_out = lambda msg: log(window, msg)
+    
+    def gui_out(msg):
+        log(window, msg)
+        window.refresh()
 
     window.refresh()
 
