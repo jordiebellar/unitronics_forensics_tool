@@ -8,6 +8,7 @@ from pcom_client import (
     read_memory,
     read_and_save_project_zip,
     upload_auth,
+    dump_all_csv,
 )
 
 
@@ -109,6 +110,7 @@ def main_gui():
             [
                 sg.Button("Save SI CSV", key = "System Integers CSV", size = (18, 2)),
                 sg.Button("Save SB CSV", key = "System Bits CSV", size = (18, 2)),
+                sg.Button("Dump All CSVs", key = "Dump All CSVs", size = (18, 2)),
             ],
         ],
     )
@@ -280,6 +282,19 @@ def main_gui():
                     log(window, f"[X] Failed to save System Bits CSV: {e}")
             else:
                 log(window, "[-] System Bits CSV save cancelled.")
+
+        elif event == "Dump All CSVs":
+            folder = sg.popup_get_folder("Choose output folder for CSV dump", title = "Dump All CSVs")
+            if folder:
+                import os
+                subfolder = os.path.join(folder, f"dump_{int(time.time())}")
+                log(window, f"[-] Dumping all operands to {subfolder}...")
+                try:
+                    dump_all_csv(ser, pcom, folder = subfolder, out = gui_out)
+                except Exception as e:
+                    log(window, f"[X] Dump All CSVs failed: {e}")
+            else:
+                log(window, "[-] Dump All CSVs cancelled.")
 
         elif event == "Check Password":
             pwd = ask_password()

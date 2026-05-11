@@ -813,6 +813,49 @@ class PCOM_CLIENT:
         if self.isTcp:
             return self.make_tcp(request, isAscii = True)
         return request
+    
+# 32 Bit ASCII PARSER (JORDIE)
+
+    def _parse_ascii_32bit(self, data: bytes, mode: str = "signed") -> list | None:
+        """
+        Parse an ASCII PCOM response containing 32-bit values.
+
+        :param data: raw bytes received from the PLC
+        :type data: bytes
+        :param mode: signed, unsigned, or float
+        :type mode: str
+        :return: list of values or None if response is invalid
+        :rtype: list | None
+        """
+        if self.isTcp:
+            data = data[self.PCOM_TCP_HEADER_SIZE:]
+        if self.debugMode:
+            self.print_pcom_ascii(data)
+        try:
+            text = data.decode("ascii", errors = "replace")
+        except Exception:
+            return None
+        payload = text[self.PCOM_TCP_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
+        if not payload or len(payload) % 8 != 0:
+            return None
+        results = []
+        for i in range(0, len(paylaod), 8):
+            chunk = payload[i:i+8]
+            try:
+                if mode == "float":
+                    # swap the 16-bit word pairs then unpack big-endian float
+                    swapped = chunk[4:] + chunk[:4]
+                    raw_bytes = bytes.fromhex(swapped)
+                    val, = struct.unpack(">f", raw_bytes)
+                else:
+                    raw = int(chunk, 16)
+                    if mode == "signed" and raw >= 0x80000000:
+                        raw -= 0x100000000
+                    val = raw
+            except (ValueError, struct.error):
+                return None
+            results.append(val)
+        return results
 
 # READ PLC NAME
 
@@ -1176,31 +1219,81 @@ class PCOM_CLIENT:
 
     # ASCII Request
 
+    def create_read_memory_longs(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RNL", f"{start:04X}{count:02X}".encode())
+
     # ASCII Response
+
+    def parse_read_memory_longs(self, data: bytes) -> list[int] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "signed")
 
 # READ MEMORY DOUBLE WORDS (JORDIE)
 
     # ASCII Request
 
+    def create_read_memory_double_words(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RND", f"{start:04X}{count:02X}".encode())
+
     # ASCII Response
+
+    def parse_read_memory_double_words(self, data: bytes) -> list[int] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "unsigned")
 
 # READ MEMORY FLOATS (JORDIE)
 
     # ASCII Request
 
+    def create_read_memory_floats(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RNF", f"{start:04X}{count:02X}".encode())
+
     # ASCII Response
+
+    def parse_read_memory_floats(self, data: bytes) -> list[float] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "float")
 
 # READ SYSTEM LONGS (JORDIE)
 
     # ASCII Request
 
+    def create_read_system_longs(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RNH", f"{start:04X}{count:02X}".encode())
+
     # ASCII Response
+
+    def parse_read_system_longs(self, data: bytes) -> list[int] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "signed")
 
 # READ SYSTEM DOUBLE WORDS (JORDIE)
 
     # ASCII Request
 
+    def create_read_system_double_words(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RNJ", f"{start:04X}{count:02X}".encode())
+
     # ASCII Response
+
+    def parse_read_system_double_words(self, data: bytes) -> list[int] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "unsigned")
 
 # WRITE SYSTEM INTEGERS (JORDIE)
 
@@ -2336,9 +2429,6 @@ def upload_auth(ser, pcom_client, password: str = PASSWORD_DEFAULT, out = print)
         out(f"\t[-] Password: Bad")
         return False
     
-SB_DESTRUCTIVE = {24, 300, 314} # Can do bad things
-SB_OBSERVABLE = {301, 302, 310, 311} # Does IRL stuff
-    
 def read_system_integers(ser, pcom_client, start: int = 0, count: int = 64, out = print) -> list[int] | None:
     """
     """
@@ -2390,6 +2480,114 @@ def read_system_bits(ser, pcom_client, start: int = 0, count: int = 32, out = pr
         out(f"      SB{start + i} = {state}  | {label}")
     
     return values
+
+def read_memory_bits(ser, pcom_client, start: int = 0, count: int = 255, out = print) -> list[bool] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_bits(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_bits(resp)
+    if values is None:
+        out("[X] Failed to read memory bits.")
+        return None
+    out(f"[-] Memory Bits MB{start} to MB{start + len(values) -1}:")
+    for i, val in enumerate(values):
+        out(f"MB {start + i} = {'1' if val else '0'}")
+    return values
+
+def read_memory_integers(ser, pcom_client, start: int = 0, count: int = 64, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_integers(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_integers(resp)
+    if values is None:
+        out("[X] Failed to read memory integers.")
+        return None
+    out(f"[-] Memory Integers MI{start} to MI{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"MI{start + i} = {val}")
+    return values
+
+def read_memory_longs(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_longs(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_longs(resp)
+    if values is None:
+        out("[X] Failed to read memory longs.")
+        return None
+    out(f"[-] Memory Longs ML{start} to ML{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"ML{start + i} = {val}")
+    return values
+
+def read_memory_double_words(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_double_words(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_double_words(resp)
+    if values is None:
+        out("[X] Failed to read memory double words.")
+        return None
+    out(f"[-] Memory Double Words MDW{start} to MDW{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"MDW{start + i} = {val}")
+    return values
+
+def read_memory_floats(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[float] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_floats(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_integers(resp)
+    if values is None:
+        out("[X] Failed to read memory floats.")
+        return None
+    out(f"[-] Memory Floats MF{start} to MF{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"MF{start + i} = {val}")
+    return values
+
+def read_system_longs(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_system_longs(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_system_longs(resp)
+    if values is None:
+        out("[X] Failed to read system longs.")
+        return None
+    out(f"[-] System Longs SL{start} to SL{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"SL{start + i} = {val}")
+    return values
+
+def read_system_double_words(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_system_double_words(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_system_double_words(resp)
+    if values is None:
+        out("[X] Failed to read system double words.")
+        return None
+    out(f"[-] System Double Words SDW{start} to SDW{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"SDW{start + i} = {val}")
+    return values
+
+SB_DESTRUCTIVE = {24, 300, 314} # Can do bad things
+SB_OBSERVABLE = {301, 302, 310, 311} # Does IRL stuff
 
 def write_system_bit(ser, pcom_client, address: int, value: bool, out = print, force: bool = False) -> bool:
     """
@@ -2527,6 +2725,8 @@ def project_zip_dump(ser, pcom):
             f.write(payload)
         print(f"[-] Saved: {out}")
 
+# SYSTEM/MEMORY VALUE DUMPS
+
 def dump_system_integers_csv(ser, pcom_client, filename: str | None = None, out = print) -> str | None:
     """
     """
@@ -2592,6 +2792,207 @@ def dump_system_bits_csv(ser, pcom_client, filename: str | None = None, out = pr
     out(f"[-] Saved: {filename}")
     return filename
 
+def dump_memory_bits_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"mb_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 255, 8192
+    out(f"[-] Sweeping MB0 to MB{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_bits(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_bits(resp)
+            if values is None:
+                out(f"[X] No response MB{start} -> MB{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, 1 if val else 0])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_memory_integers_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"mi_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 64, 4096
+    out(f"[-] Sweeping MI0 to MI{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_integers(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_integers(resp)
+            if values is None:
+                out(f"[X] No response MI{start} -> MI{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_memory_longs_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"ml_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 512
+    out(f"[-] Sweeping ML0 to ML{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_longs(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_longs(resp)
+            if values is None:
+                out(f"[X] No response ML{start} -> ML{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_memory_double_words_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"mdw_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 256
+    out(f"[-] Sweeping MDW0 to MDW{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_double_words(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_double_words(resp)
+            if values is None:
+                out(f"[X] No response MDW{start} -> MDW{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_memory_floats_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"mf_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 64
+    out(f"[-] Sweeping MF0 to MF{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_floats(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_floats(resp)
+            if values is None:
+                out(f"[X] No response MF{start} -> MF{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, f"{val:.6f}"])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_system_longs_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"sl_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 56
+    out(f"[-] Sweeping SL0 to SL{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_system_longs(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_system_longs(resp)
+            if values is None:
+                out(f"[X] No response SL{start} -> SL{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_system_double_words_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"sdw_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 64
+    out(f"[-] Sweeping SDW0 to SDW{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_system_double_words(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_system_double_words(resp)
+            if values is None:
+                out(f"[X] No response SDW{start} -> SDW{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_all_csv(ser, pcom_client, folder: str | None = None, out = print) -> str:
+    """
+    Dump all operand types to CSV files in a single timestamped folder.
+
+    :param ser: open serial connection object
+    :param pcom_client: PCOM_CLIENT instance
+    :param folder: output folder path, auto-generated if None
+    :type folder: str | None
+    :param out: callable for output, defaults to print
+    :type out: callable
+    :return: path to folder
+    :rtype: str
+    """
+    import os
+    folder = folder or f"dump_{int(time.time())}"
+    os.makedirs(folder, exist_ok = True)
+    out(f"[-] Saving all operand CSVs to: {folder}/")
+
+    dumps = [
+        ("MB", dump_memory_bits_csv, "mb_dump.csv"),
+        ("MI", dump_memory_integers_csv, "mi_dump.csv"),
+        ("ML", dump_memory_longs_csv, "ml_dump.csv"),
+        ("MDW", dump_memory_double_words_csv, "mdw_dump.csv"),
+        ("MF", dump_memory_floats_csv, "mf_dump.csv"),
+        ("SB", dump_system_bits_csv, "sb_dump.csv"),
+        ("SI", dump_system_integers_csv, "si_dump.csv"),
+        ("SL", dump_system_longs_csv, "sl_dump.csv"),
+        ("SDW", dump_system_double_words_csv, "sdw_dump.csv"),
+    ]
+
+    for label, fn, fname in dumps:
+        out(f"[-] Dumping {label}...")
+        try:
+            fn(ser, pcom_client, filename = os.path.join(folder, fname), out = out)
+        except Exception as e:
+            out(f"[X] {label} dump failed: {e}")
+
+    out(f"[-] All dumps complete. Folder: {folder}/")
+    return folder
+
 def auth(ser, pcom):
     """
     Test the PLC upload/write password.
@@ -2649,6 +3050,7 @@ def main() -> None:
             print(" 9) Toggle debugMode (currently: {})".format("ON" if pcom.debugMode else "OFF"))
             print(" 10) Read System Integer")
             print(" 11) Read Information Mode Password")
+            print(" 12) Dump ALL operands to CSV folder")
             print(" 0) Exit")
 
             choice = input("Select an option: ").strip()
@@ -2682,6 +3084,8 @@ def main() -> None:
             elif choice == "11":
                 password = read_system_integers(ser, pcom, start = 253, count = 1)
                 print(f"[-] Information Mode Password: {password}")
+            elif choice == "12":
+                folder = dump_all_csv(ser, pcom)
             else:
                 print("  [!] Invalid choice. Pick a number from the menu.")
 
