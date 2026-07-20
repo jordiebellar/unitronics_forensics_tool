@@ -1467,7 +1467,7 @@ class PCOM_CLIENT:
         res1 = b"\xfe"
         res2 = b"\x01"
         res3 = b"\x00\x00\x00" # different than default
-        res4 = struct.pack("b", resource_id) # where the resource is selected
+        res4 = struct.pack("B", resource_id) # where the resource is selected
         command_details = b"\x00"*6
         return self.create_binary_request(
               command_opcode = opcode, 
@@ -2051,7 +2051,7 @@ class PCOM_CLIENT:
         res1 = b"\xfe"
         res2 = b"\x01"
         res3 = b"\x00\x00\x00" # different than default
-        res4 = struct.pack("b", flag) # carries flag
+        res4 = struct.pack("B", flag) # carries flag
         command_details = address
         command_details += struct.pack("<H", size)
 
@@ -2319,7 +2319,7 @@ def read_project_zip(ser, pcom_client, out = print) -> bytes:
     s.write(where_resource_id_req)
     resp = s.read(1024*5)
     addr, size, res_id = pcom.parse_where_resource(resp)
-    out(f"[-] Reading project file from {hex(addr)} with size {hex(size)}")
+    out(f"[-] Project ZIP: addr={hex(addr)} size={hex(size)} flag={res_id}")
     project_zip_data = do_read(ser=s, pcom_client=pcom, addr=addr, length=size, flag=res_id, out = out) # flag should be 1
     return project_zip_data
 
@@ -2348,7 +2348,6 @@ def read_memory(
         loc_type: int = 1, 
         start: int = 0, 
         end: int = 0x100000, 
-        chunk_size: int = 0x1000_000,
         filename: str | None = None,
         out = print
         ) -> str:
@@ -2363,25 +2362,30 @@ def read_memory(
     :type start: int
     :param end: ending memory address
     :type end: int
-    :param chunk_size: maximum number of bytes to read in this dump
-    :type chunk_size: int
     :return: filename of saved dump
     :rtype: str
     """
-    out(f"[-] Dumping RAM from address {hex(start)} to address {hex(end)} (flag={loc_type})")
+    if end <= start:
+        out(f"[X] end ({hex(end)}) must be greater than start ({hex(start)})")
+        return ""
+
+    length = end - start
+    out(f"[-] Dumping memory from {hex(start)} to {hex(end)} ({hex(length)} bytes, flag={loc_type})")
+
     pcom = pcom_client
     filename = filename or f"ram_{hex(start)}_{hex(end)}_flag_{loc_type}_{int(time.time())}.bin"
 
-    current_adr = start
-    with open(filename, "wb") as f: 
-       while current_adr < end:
-              next_addr = min(current_adr + chunk_size, end) #checks to see if the next address will be the next 16 Mbytes or just to the end address
-              length = next_addr - current_adr
+    # Reduce timeout for the dump to avoid 250ms dead-wait after each response
+    old_timeout = ser.timeout
+    ser.timeout = 0.125
 
-              data = do_read(ser, pcom, addr = current_adr, length = length, flag = loc_type, out = out)
-              f.write(data)
+    try:
+        data = do_read(ser, pcom, addr=start, length=length, flag=loc_type, out=out)
+    finally:
+        ser.timeout = old_timeout  # Always restore, even if do_read throws
 
-              current_adr = next_addr
+    with open(filename, "wb") as f:
+        f.write(data)
 
     out(f"[-] Saved dump to: {filename}")
     return filename
@@ -2676,29 +2680,17 @@ def dump_one_file(ser, pcom):
     :param pcom: PCOM_CLIENT instance
     """
     start = prompt_int("Start address", 0x0)
-    end = prompt_int("End address (non-inclusive)", 0x100000)
+    end = prompt_int("End address (non-inclusive)", 0x40000)
     flag = prompt_int("Memory flag", 1)
-    chunk = prompt_int("Chunk size", 0x100000)
+    filename = prompt_str("Output filename", "")
 
     if end <= start:
         print(f"{WARNING}[X] End must be greater than start.{ENDC}")
         return
 
-    out = prompt_str("Output filename (leave blank for auto)", "")
-    if not out:
-        out = f"ram_{hex(start)}_{hex(end)}_flag_{flag}_{int(time.time())}.bin"
+    read_memory(ser, pcom, loc_type = flag, start = start, end = end, filename = filename or None)
 
-    print(f"[-] Dumping {hex(start)}..{hex(end)} flag={flag} -> {out}")
-    cur = start
-    with open(out, "wb") as f:
-        while cur < end:
-            nxt = min(cur + chunk, end)
-            length = nxt - cur
-            data = do_read(ser, pcom, addr=cur, length=length, flag=flag)
-            f.write(data)
-            cur = nxt
-
-    print(f"[-] Saved dump to: {out}")
+    print(f"[-] Saved dump to: {filename}")
 
 def project_zip_dump(ser, pcom):
     """
@@ -3022,6 +3014,63 @@ def stop_plc(ser, pcom):
         pcom.print_pcom_ascii(resp)
     print("[-] Stop command sent.")
 
+def sweep_resource_ids(ser, pcom_client, out=print) -> None:
+    """
+    Sweep all 255 resource IDs and log the address, size, and resource ID
+    returned by the PLC for each one.
+    """
+    import csv
+
+    pcom = pcom_client
+    filename = f"resource_sweep_{int(time.time())}.csv"
+
+    out(f"[-] Sweeping all 255 resource IDs...")
+
+    results = []
+
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["resource_id", "address", "size", "res_id_returned", "notes"])
+
+        for rid in range(256):
+            try:
+                ser.write(pcom.create_where_resource(rid))
+                resp = ser.read(1024 * 5)
+
+                if len(resp) < 24 + 12 + 3:
+                    out(f"  ID {rid:3d}: response too short")
+                    writer.writerow([rid, "", "", "", "too short"])
+                    continue
+
+                addr, size, res_id_returned = pcom.parse_where_resource(resp)
+
+                notes = []
+                if addr == 0 and size == 0:
+                    notes.append("null")
+                if rid == RESOURCE_ID_PROJECT_ZIP:
+                    notes.append("PROJECT_ZIP")
+                if rid == 0x0d:
+                    notes.append("RESOURCE_TABLE")
+                if size > 0:
+                    notes.append(f"addr={hex(addr)}")
+
+                note_str = " ".join(notes)
+                out(f"  ID {rid:3d}: addr={hex(addr):<12} size={hex(size):<10} returned_id={res_id_returned:<5} {note_str}")
+                writer.writerow([rid, hex(addr), hex(size), res_id_returned, note_str])
+                results.append((rid, addr, size, res_id_returned))
+
+            except Exception as e:
+                out(f"  ID {rid:3d}: ERROR - {e}")
+                writer.writerow([rid, "", "", "", f"error: {e}"])
+
+    # Summary - only non-null entries
+    out(f"\n[-] Non-null results:")
+    for rid, addr, size, ret in results:
+        if addr != 0 or size != 0:
+            out(f"  ID {rid:3d}: addr={hex(addr)}  size={hex(size)}  returned_id={ret}")
+
+    out(f"[-] Saved to {filename}")
+
 def main() -> None:
     """
     Entry point
@@ -3034,7 +3083,7 @@ def main() -> None:
         return
     ser, pcom = result
 
-    dump_system_bits_csv(ser, pcom)
+    upload_auth(ser, pcom, "12345678")
 
     try:
         while True:

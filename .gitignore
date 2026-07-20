@@ -1,2 +1,6 @@
 __pycache__/
 FILE DUMPS/
+*.bin
+*.csv
+SWEEPS/
+BIN DUMPS/
