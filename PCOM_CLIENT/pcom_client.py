@@ -3071,6 +3071,144 @@ def sweep_resource_ids(ser, pcom_client, out=print) -> None:
 
     out(f"[-] Saved to {filename}")
 
+def profile_memory_map(
+        ser,
+        pcom_client,
+        start: int = 0,
+        end: int = 0x1000000,
+        stride: int = 0x10000,
+        probe_size: int = 512,
+        flag: int = 0,
+        filename: str | None = None,
+        out = print
+        ) -> str | None:
+    """
+    Build a coarse structural map of a PLC address space by sparse probing.
+
+    Reads a small `probe_size` window at every `stride` bytes and records, per
+    probe: Shannon entropy, %0xFF, %0x00, an MD5, and a hex/ASCII preview. Because
+    a probe <= 976 bytes is a single PCOM read (one round trip), the full 16 MB
+    space is characterized in a few hundred requests instead of a full dump.
+
+    The CSV reveals region boundaries (fill vs content), high-entropy blobs
+    (code / compressed / live RAM), and address aliasing (identical MD5s at
+    multiple offsets, e.g. the app image mirrored across banks, or the wrap point
+    if `end` is set past 0x1000000).
+
+    :param ser: an open serial object
+    :param pcom_client: PCOM_CLIENT instance
+    :param start: first address to probe
+    :type start: int
+    :param end: one-past-last address to probe
+    :type end: int
+    :param stride: distance between probe start addresses
+    :type stride: int
+    :param probe_size: bytes per probe (keep <= 976 for one request each)
+    :type probe_size: int
+    :param flag: memory/region selector (0 = OS/firmware flash, 1 = application)
+    :type flag: int
+    :param filename: output CSV path (auto-named if None)
+    :type filename: str | None
+    :return: the CSV filename, or None if nothing was probed
+    :rtype: str | None
+    """
+    import math, hashlib
+
+    pcom = pcom_client
+
+    if end <= start:
+        out(f"[X] end ({hex(end)}) must be greater than start ({hex(start)})")
+        return None
+    if probe_size > 976:
+        out(f"{WARNING}[!] probe_size {probe_size} > 976; each probe will span multiple requests.{ENDC}")
+
+    filename = filename or f"memmap_flag{flag}_{hex(start)}_{hex(end)}_{int(time.time())}.csv"
+
+    def shannon(buf: bytes) -> float:
+        if not buf:
+            return 0.0
+        counts = [0] * 256
+        for b in buf:
+            counts[b] += 1
+        n = len(buf)
+        h = 0.0
+        for c in counts:
+            if c:
+                p = c / n
+                h -= p * math.log2(p)
+        return h
+
+    n_probes = (end - start + stride - 1) // stride
+    out(f"[-] Profiling flag={flag} {hex(start)}..{hex(end)}: {n_probes} probes x {probe_size} B (stride {hex(stride)})")
+
+    seen = {}  # md5 -> {"offsets": [...], "fill": bool, "H": float}
+
+    old_timeout = ser.timeout
+    ser.timeout = 0.125  # same trick read_memory uses to avoid dead-wait per response
+
+    try:
+        with open(filename, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["offset", "offset_hex", "entropy", "pct_ff", "pct_00", "md5", "first16_hex", "ascii_preview"])
+
+            addr = start
+            i = 0
+            while addr < end:
+                probe = do_read(ser, pcom, addr=addr, length=probe_size, flag=flag, out=lambda *a, **k: None)
+
+                if not probe:
+                    writer.writerow([addr, hex(addr), "", "", "", "", "", "no_response"])
+                    addr += stride
+                    i += 1
+                    continue
+
+                n = len(probe)  # do_read may return short; classify only what arrived
+                ff = probe.count(0xff)
+                zz = probe.count(0x00)
+                h = shannon(probe)
+                digest = hashlib.md5(probe).hexdigest()
+                preview = "".join(chr(b) if 32 <= b < 127 else "." for b in probe[:24])
+
+                writer.writerow([addr, hex(addr), f"{h:.3f}", f"{100*ff/n:.1f}",
+                                 f"{100*zz/n:.1f}", digest[:12], probe[:16].hex(), preview])
+
+                rec = seen.get(digest)
+                if rec is None:
+                    seen[digest] = {"offsets": [addr], "fill": len(set(probe)) == 1, "H": h}
+                else:
+                    rec["offsets"].append(addr)
+
+                if i % 32 == 0:
+                    out(f"    {hex(addr)}  H={h:5.2f}  FF={100*ff/n:5.1f}%  {preview}")
+
+                addr += stride
+                i += 1
+    finally:
+        ser.timeout = old_timeout
+
+    # Aliasing summary: content mirrors first (the interesting structure), fill runs second.
+    content = sorted(((d, r) for d, r in seen.items() if len(r["offsets"]) > 1 and not r["fill"]),
+                     key=lambda kv: -len(kv[1]["offsets"]))
+    fill    = sorted(((d, r) for d, r in seen.items() if len(r["offsets"]) > 1 and r["fill"]),
+                     key=lambda kv: -len(kv[1]["offsets"]))
+
+    if content:
+        out(f"\n[-] Mirrored CONTENT (identical non-fill probe at multiple offsets) - {len(content)} groups:")
+        for d, r in content[:20]:
+            offs = r["offsets"]
+            sample = ", ".join(hex(o) for o in offs[:8])
+            more = "" if len(offs) <= 8 else f" ... (+{len(offs)-8} more)"
+            out(f"    {d[:12]}  H={r['H']:4.1f}  x{len(offs):<4} {sample}{more}")
+    else:
+        out(f"\n[-] No mirrored content at this stride.")
+
+    if fill:
+        total = sum(len(r["offsets"]) for _, r in fill)
+        out(f"[-] Fill regions (constant-byte probes): {total} probes across {len(fill)} value(s).")
+
+    out(f"[-] Saved memory map to: {filename}")
+    return filename
+
 def main() -> None:
     """
     Entry point
@@ -3100,6 +3238,7 @@ def main() -> None:
             print(" 10) Read System Integer")
             print(" 11) Read Information Mode Password")
             print(" 12) Dump ALL operands to CSV folder")
+            print(" 13) Profile Memory Map (coarse entropy scan)")
             print(" 0) Exit")
 
             choice = input("Select an option: ").strip()
@@ -3135,6 +3274,12 @@ def main() -> None:
                 print(f"[-] Information Mode Password: {password}")
             elif choice == "12":
                 folder = dump_all_csv(ser, pcom)
+            elif choice == "13":
+                profile_memory_map(ser, pcom, start = prompt_int("Start address", 0x0),
+                                   end = prompt_int("End address", 0x1000000),
+                                      stride = prompt_int("Stride", 0x10000),
+                                        probe_size = prompt_int("Probe size", 512),
+                                            flag = prompt_int("Memory flag", 1))  
             else:
                 print("  [!] Invalid choice. Pick a number from the menu.")
 
