@@ -590,8 +590,7 @@ class PCOM_CLIENT:
             direction = "Client ---> Server"
         self.out(f"{direction}: Binary PCOM Command {opcode_message} ({hex(int.from_bytes(opcode, 'little'))})")
         self.out(data)
-
-    
+  
     def print_pcom_ascii(self, data: bytes) -> None:
         """
         Pretty print a summary of an ASCII PCOM packet.
@@ -623,7 +622,6 @@ class PCOM_CLIENT:
         self.out(f"{direction}: ASCII PCOM Command {opcode_message} ({opcode.decode()})")
         self.out(data)
 
-
     def extract_pcom_data(self, data: bytes) -> bytes:
         """
         Extract the payload from a binary PCOM response frame.
@@ -642,7 +640,6 @@ class PCOM_CLIENT:
             self.print_pcom_binary(data)
         return data[self.PCOM_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
 
-    
     def make_tcp(self,data: bytes, isAscii: bool = False) -> bytes:
         """
         Wrap a raw PCOM frame inside the Unitronics PCOM/TCP header.
@@ -682,8 +679,7 @@ class PCOM_CLIENT:
         """
         # Packet[0:22]
         return struct.pack("<H", (( ~ (sum(data[0:22]) % 0x10_000) + 1 ) % 0xffff + 1))
-
-        
+   
     def calc_binary_footer_crc(self, data: bytes) -> bytes:
         """
         Compute the 16-bit checksum for the binary PCOM payload section.
@@ -703,7 +699,6 @@ class PCOM_CLIENT:
         """
         # Packet[24:-3]
         return struct.pack("<H", (( ~ (sum(data[self.PCOM_HEADER_SIZE:]) % 0x10_000) + 1 ) % 0xffff + 1))
-
 
     def calc_ascii_crc(self, data: bytes) -> bytes:
         """
@@ -792,6 +787,76 @@ class PCOM_CLIENT:
         
         return packet
     
+# ASCII PCOM REQUEST FACTORY (JORDIE)
+
+    def _build_ascii_request(self, opcode: bytes, payload: bytes = b"") -> bytes:
+        """
+        Build a complete ASCII PCOM request frame.
+
+        :param opcode: ASCII opcode
+        :type opcode: bytes
+        :param payload: opcode-specific bytes
+        :type payload: bytes
+        :return: complete ASCII PCOM request frame
+        :rtype: bytes
+        """
+
+        request = self.ascii_header_magic # /
+        request += b"00"                  # Unit ID
+        request += opcode
+        request += payload
+        request += self.calc_ascii_crc(request)
+        request += self.ascii_suffix
+
+        if self.debugMode:
+            self.print_pcom_ascii(request)
+        if self.isTcp:
+            return self.make_tcp(request, isAscii = True)
+        return request
+    
+# 32 Bit ASCII PARSER (JORDIE)
+
+    def _parse_ascii_32bit(self, data: bytes, mode: str = "signed") -> list | None:
+        """
+        Parse an ASCII PCOM response containing 32-bit values.
+
+        :param data: raw bytes received from the PLC
+        :type data: bytes
+        :param mode: signed, unsigned, or float
+        :type mode: str
+        :return: list of values or None if response is invalid
+        :rtype: list | None
+        """
+        if self.isTcp:
+            data = data[self.PCOM_TCP_HEADER_SIZE:]
+        if self.debugMode:
+            self.print_pcom_ascii(data)
+        try:
+            text = data.decode("ascii", errors = "replace")
+        except Exception:
+            return None
+        payload = text[self.PCOM_TCP_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
+        if not payload or len(payload) % 8 != 0:
+            return None
+        results = []
+        for i in range(0, len(payload), 8):
+            chunk = payload[i:i+8]
+            try:
+                if mode == "float":
+                    # swap the 16-bit word pairs then unpack big-endian float
+                    swapped = chunk[4:] + chunk[:4]
+                    raw_bytes = bytes.fromhex(swapped)
+                    val, = struct.unpack(">f", raw_bytes)
+                else:
+                    raw = int(chunk, 16)
+                    if mode == "signed" and raw >= 0x80000000:
+                        raw -= 0x100000000
+                    val = raw
+            except (ValueError, struct.error):
+                return None
+            results.append(val)
+        return results
+
 # READ PLC NAME
 
     # Binary Request
@@ -942,38 +1007,25 @@ class PCOM_CLIENT:
         res["leftover"] = leftovers
         return res
 
-# READ SYSTEM INTEGERS
+# READ SYSTEM INTEGERS (JORDIE)
 
-    # ASCII Request
+    # ASCII Request 
 
     def create_read_system_integers(self, start: int = 0, count: int = 64) -> bytes:
         """
         Build an ASCII PCOM request to read system integers from the PLC.
         
-        :param start:
-        :type start:
-        :param count:
-        :type count:
+        :param start: starting address of read
+        :type start: int
+        :param count: how many addresses to read
+        :type count: int
         :return: the complete ASCII PCOM request frame as bytes
         :rtype: bytes
         """
-        request = self.ascii_header_magic # Magic "/"
-        request += b"00" # Unit ID (00 const)
-        request += b"GF" # Opcode 
-        request += f"{start:04X}".encode() # Address
-        request += f"{count:02X}".encode() # Length
-        request += self.calc_ascii_crc(request)
-        request += self.ascii_suffix
-
-        if self.debugMode:
-            self.print_pcom_ascii(request)
-        
-        if self.isTcp:
-            return self.make_tcp(request, isAscii=True)
-        
-        return request
+        payload = f"{start:04X}{count:02X}".encode()        
+        return self._build_ascii_request(b"GF", payload)
     
-    # ASCII RESPONSE (JORDIE)
+    # ASCII RESPONSE
 
     def parse_read_system_integers(self, data: bytes) -> list[int] | None:
         """
@@ -1012,7 +1064,7 @@ class PCOM_CLIENT:
             results.append(raw)
         return results
     
-# READ SYSTEM BITS
+# READ SYSTEM BITS (JORDIE)
 
     # ASCII Request
 
@@ -1020,28 +1072,15 @@ class PCOM_CLIENT:
         """
         Build an ASCII PCOM request to read system bits from the PLC.
         
-        :param start:
-        :type start:
-        :param count:
-        :type count:
+        :param start: the address to begin the read
+        :type start: int
+        :param count: how many addresses to read
+        :type count: int
         :return: the complete ASCII PCOM request frame as bytes
         :rtype: bytes
         """
-        request = self.ascii_header_magic # Magic "/"
-        request += b"00" # Unit ID (00 const)
-        request += b"GS" # Opcode 
-        request += f"{start:04X}".encode() # Address
-        request += f"{count:02X}".encode() # Length
-        request += self.calc_ascii_crc(request)
-        request += self.ascii_suffix
-
-        if self.debugMode:
-            self.print_pcom_ascii(request)
-        
-        if self.isTcp:
-            return self.make_tcp(request, isAscii=True)
-        
-        return request
+        payload = f"{start:04X}{count:02X}".encode()
+        return self._build_ascii_request(b"GS", payload)
     
     # ASCII Response
 
@@ -1077,53 +1116,218 @@ class PCOM_CLIENT:
             results.append(ch == '1')
         return results
     
-# WRITE SYSTEM INTEGERS
+# READ MEMORY BITS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_memory_bits(self, start: int = 0, count: int = 255) -> bytes:
+        """
+        Build an ASCII PCOM read memory bits request.
+
+        :param start: address where read starts
+        :type start: int
+        :param count: number of addresses to read
+        :type count: int
+        :return: complete ASCII PCOM request frame
+        :rtype: bytes
+        """
+        payload = f"{start:04X}{count:02X}".encode()
+        return self._build_ascii_request(b"RB", payload)
+
+    # ASCII Response
+
+    def parse_read_memory_bits(self, data: bytes) -> list[bool] | None:
+        """
+        Parse an ASCII PCOM read memory bits response into a list.
+
+        :param data: raw bytes recieved from PLC
+        :type data: bytes
+        :return: list of bool values or None
+        :rtype: list[bool] | None
+        """
+
+        if self.isTcp:
+            data = data[self.PCOM_TCP_HEADER_SIZE:]
+        if self.debugMode:
+            self.print_pcom_ascii(data)
+        try:
+            text = data.decode("ascii", errors = "replace")
+        except Exception:
+            return None
+        payload = text[self.PCOM_TCP_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
+        if not payload:
+            return None
+        results = []
+        for ch in payload:
+            if ch not in ('0', '1'):
+                return None
+            results.append(ch == '1')
+        return results
+
+# READ MEMORY INTEGERS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_memory_integers(self, start: int = 0, count: int = 64) -> bytes:
+        """
+        Build an ASCII PCOM read memory integers request.
+
+        :param start: starting address to read
+        :type start: int
+        :param count: number of addresses to read
+        :type count: int
+        :return: a complete ASCII PCOM request frame
+        :rtype: bytes
+        """
+        payload = f"{start:04X}{count:02X}".encode()
+        return self._build_ascii_request(b"RW", payload)
+
+    # ASCII Response
+
+    def parse_read_memory_integers(self, data: bytes) -> list[int] | None:
+        """
+        Parse an ASCII PCOM read memory integers request into a list.
+
+        :param data: the raw bytes received from the PLC
+        :type data: bytes
+        :return: a list of int or None
+        :rtype: list[int] | None
+        """
+        if self.isTcp:
+            data = data[self.PCOM_TCP_HEADER_SIZE:]
+        if self.debugMode:
+            self.print_pcom_ascii(data)
+        try:
+            text = data.decode("ascii", errors = "replace")
+        except Exception:
+            return None
+        payload = text[self.PCOM_TCP_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
+        if not payload or len(payload) % 4 != 0:
+            return None
+        results = []
+        for i in range(0, len(payload), 4):
+            try:
+                raw = int(payload[i: i+4], 15)
+            except ValueError:
+                return None
+            if raw >= 0x8000:
+                raw -= 0x10000
+            results.append(raw)
+        return results
+
+# READ MEMORY LONGS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_memory_longs(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RNL", f"{start:04X}{count:02X}".encode())
+
+    # ASCII Response
+
+    def parse_read_memory_longs(self, data: bytes) -> list[int] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "signed")
+
+# READ MEMORY DOUBLE WORDS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_memory_double_words(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RND", f"{start:04X}{count:02X}".encode())
+
+    # ASCII Response
+
+    def parse_read_memory_double_words(self, data: bytes) -> list[int] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "unsigned")
+
+# READ MEMORY FLOATS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_memory_floats(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RNF", f"{start:04X}{count:02X}".encode())
+
+    # ASCII Response
+
+    def parse_read_memory_floats(self, data: bytes) -> list[float] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "float")
+
+# READ SYSTEM LONGS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_system_longs(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RNH", f"{start:04X}{count:02X}".encode())
+
+    # ASCII Response
+
+    def parse_read_system_longs(self, data: bytes) -> list[int] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "signed")
+
+# READ SYSTEM DOUBLE WORDS (JORDIE)
+
+    # ASCII Request
+
+    def create_read_system_double_words(self, start: int = 0, count: int = 32) -> bytes:
+        """
+        """
+        return self._build_ascii_request(b"RNJ", f"{start:04X}{count:02X}".encode())
+
+    # ASCII Response
+
+    def parse_read_system_double_words(self, data: bytes) -> list[int] | None:
+        """
+        """
+        return self._parse_ascii_32bit(data, mode = "unsigned")
+
+# WRITE SYSTEM INTEGERS (JORDIE)
 
     # ASCII Request
 
     def create_write_system_integer(self, address: int, value: int) -> bytes:
         """
+        Build an ASCII PCOM request to write to the system integers.
+
+        :param address: the address to write to
+        :type address: int
+        :param value: the value to write to the address
+        :type value: int
+        :return: the complete ASCII PCOM request
+        :rtype: bytes
         """
-        request = self.ascii_header_magic
-        request += b"00"
-        request += b"SF"
-        request += f"{address:04X}".encode()
-        request += b"01"
-        request += f"{value & 0xFFFF:04X}".encode()
-        request += self.calc_ascii_crc(request)
-        request += self.ascii_suffix
-
-        if self.debugMode:
-            self.print_pcom_ascii(request)
-
-        if self.isTcp:
-            return self.make_tcp(request, isAscii = True)
-        
-
-        return request
+        payload = f"{address:04X}01{value & 0xFFFF:04X}".encode()
+        return self._build_ascii_request(b"SF", payload)
     
-# WRITE SYSTEM BITS
+# WRITE SYSTEM BITS (JORDIE)
 
     def create_write_system_bit(self, address: int, value: bool) -> bytes:
         """
+        Build an ASCII PCOM request to write to the system bits.
+
+        :param address: the address to write to
+        :type address: int
+        :param value: the value to write to the address
+        :type value: int
+        :return: the complete ASCII PCOM request
+        :rtype: bytes
         """
-
-        request = self.ascii_header_magic
-        request += b"00"
-        request += b"SS"
-        request += f"{address:04X}".encode()
-        request += b"01"
-        request += b"1" if value else b"0"
-        request += self.calc_ascii_crc(request)
-        request += self.ascii_suffix
-
-        if self.debugMode:
-            self.print_pcom_ascii(request)
-
-        if self.isTcp:
-            return self.make_tcp(request, isAscii = True)
-        
-        return request
+        payload = f"{address:04X}01".encode() + (b"1" if value else b"0")
+        return self._build_ascii_request(b"SS", payload)
 
 # READ OPERAND *** IGNORE RESPONSE LATER? *** *** PARSE IS NOT IMPLEMENTED ***
 
@@ -1263,7 +1467,7 @@ class PCOM_CLIENT:
         res1 = b"\xfe"
         res2 = b"\x01"
         res3 = b"\x00\x00\x00" # different than default
-        res4 = struct.pack("b", resource_id) # where the resource is selected
+        res4 = struct.pack("B", resource_id) # where the resource is selected
         command_details = b"\x00"*6
         return self.create_binary_request(
               command_opcode = opcode, 
@@ -1424,7 +1628,6 @@ class PCOM_CLIENT:
             res3 = res3
             )
 
-
     # Binary Response
     def parse_translate_index(self, data: bytes) -> tuple[bytes, int] | int:
         """
@@ -1578,7 +1781,6 @@ class PCOM_CLIENT:
             except Exception as e:
                 pass
     
-
     def parse_decompressed(self, data: bytes, out = print) -> None:
         """
         Parse and print fields from a decompressed signature metadata blob.
@@ -1803,7 +2005,6 @@ class PCOM_CLIENT:
             res3 = res3
             )
 
-
     # Binary Response
     def parse_check_password(self, data: bytes) -> bool:
         """
@@ -1850,7 +2051,7 @@ class PCOM_CLIENT:
         res1 = b"\xfe"
         res2 = b"\x01"
         res3 = b"\x00\x00\x00" # different than default
-        res4 = struct.pack("b", flag) # carries flag
+        res4 = struct.pack("B", flag) # carries flag
         command_details = address
         command_details += struct.pack("<H", size)
 
@@ -2118,7 +2319,7 @@ def read_project_zip(ser, pcom_client, out = print) -> bytes:
     s.write(where_resource_id_req)
     resp = s.read(1024*5)
     addr, size, res_id = pcom.parse_where_resource(resp)
-    out(f"[-] Reading project file from {hex(addr)} with size {hex(size)}")
+    out(f"[-] Project ZIP: addr={hex(addr)} size={hex(size)} flag={res_id}")
     project_zip_data = do_read(ser=s, pcom_client=pcom, addr=addr, length=size, flag=res_id, out = out) # flag should be 1
     return project_zip_data
 
@@ -2147,7 +2348,6 @@ def read_memory(
         loc_type: int = 1, 
         start: int = 0, 
         end: int = 0x100000, 
-        chunk_size: int = 0x1000_000,
         filename: str | None = None,
         out = print
         ) -> str:
@@ -2162,25 +2362,30 @@ def read_memory(
     :type start: int
     :param end: ending memory address
     :type end: int
-    :param chunk_size: maximum number of bytes to read in this dump
-    :type chunk_size: int
     :return: filename of saved dump
     :rtype: str
     """
-    out(f"[-] Dumping RAM from address {hex(start)} to address {hex(end)} (flag={loc_type})")
+    if end <= start:
+        out(f"[X] end ({hex(end)}) must be greater than start ({hex(start)})")
+        return ""
+
+    length = end - start
+    out(f"[-] Dumping memory from {hex(start)} to {hex(end)} ({hex(length)} bytes, flag={loc_type})")
+
     pcom = pcom_client
     filename = filename or f"ram_{hex(start)}_{hex(end)}_flag_{loc_type}_{int(time.time())}.bin"
 
-    current_adr = start
-    with open(filename, "wb") as f: 
-       while current_adr < end:
-              next_addr = min(current_adr + chunk_size, end) #checks to see if the next address will be the next 16 Mbytes or just to the end address
-              length = next_addr - current_adr
+    # Reduce timeout for the dump to avoid 250ms dead-wait after each response
+    old_timeout = ser.timeout
+    ser.timeout = 0.125
 
-              data = do_read(ser, pcom, addr = current_adr, length = length, flag = loc_type, out = out)
-              f.write(data)
+    try:
+        data = do_read(ser, pcom, addr=start, length=length, flag=loc_type, out=out)
+    finally:
+        ser.timeout = old_timeout  # Always restore, even if do_read throws
 
-              current_adr = next_addr
+    with open(filename, "wb") as f:
+        f.write(data)
 
     out(f"[-] Saved dump to: {filename}")
     return filename
@@ -2227,9 +2432,6 @@ def upload_auth(ser, pcom_client, password: str = PASSWORD_DEFAULT, out = print)
     else:
         out(f"\t[-] Password: Bad")
         return False
-    
-SB_DESTRUCTIVE = {24, 300, 314} # Can do bad things
-SB_OBSERVABLE = {301, 302, 310, 311} # Does IRL stuff
     
 def read_system_integers(ser, pcom_client, start: int = 0, count: int = 64, out = print) -> list[int] | None:
     """
@@ -2283,6 +2485,114 @@ def read_system_bits(ser, pcom_client, start: int = 0, count: int = 32, out = pr
     
     return values
 
+def read_memory_bits(ser, pcom_client, start: int = 0, count: int = 255, out = print) -> list[bool] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_bits(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_bits(resp)
+    if values is None:
+        out("[X] Failed to read memory bits.")
+        return None
+    out(f"[-] Memory Bits MB{start} to MB{start + len(values) -1}:")
+    for i, val in enumerate(values):
+        out(f"MB {start + i} = {'1' if val else '0'}")
+    return values
+
+def read_memory_integers(ser, pcom_client, start: int = 0, count: int = 64, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_integers(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_integers(resp)
+    if values is None:
+        out("[X] Failed to read memory integers.")
+        return None
+    out(f"[-] Memory Integers MI{start} to MI{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"MI{start + i} = {val}")
+    return values
+
+def read_memory_longs(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_longs(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_longs(resp)
+    if values is None:
+        out("[X] Failed to read memory longs.")
+        return None
+    out(f"[-] Memory Longs ML{start} to ML{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"ML{start + i} = {val}")
+    return values
+
+def read_memory_double_words(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_double_words(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_double_words(resp)
+    if values is None:
+        out("[X] Failed to read memory double words.")
+        return None
+    out(f"[-] Memory Double Words MDW{start} to MDW{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"MDW{start + i} = {val}")
+    return values
+
+def read_memory_floats(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[float] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_memory_floats(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_memory_integers(resp)
+    if values is None:
+        out("[X] Failed to read memory floats.")
+        return None
+    out(f"[-] Memory Floats MF{start} to MF{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"MF{start + i} = {val}")
+    return values
+
+def read_system_longs(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_system_longs(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_system_longs(resp)
+    if values is None:
+        out("[X] Failed to read system longs.")
+        return None
+    out(f"[-] System Longs SL{start} to SL{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"SL{start + i} = {val}")
+    return values
+
+def read_system_double_words(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
+    """
+    """
+    pcom = pcom_client
+    ser.write(pcom.create_read_system_double_words(start = start, count = count))
+    resp = ser.read(1024 * 5)
+    values = pcom.parse_read_system_double_words(resp)
+    if values is None:
+        out("[X] Failed to read system double words.")
+        return None
+    out(f"[-] System Double Words SDW{start} to SDW{start + len(values) - 1}:")
+    for i, val in enumerate(values):
+        out(f"SDW{start + i} = {val}")
+    return values
+
+SB_DESTRUCTIVE = {24, 300, 314} # Can do bad things
+SB_OBSERVABLE = {301, 302, 310, 311} # Does IRL stuff
+
 def write_system_bit(ser, pcom_client, address: int, value: bool, out = print, force: bool = False) -> bool:
     """
     """
@@ -2330,7 +2640,6 @@ def prompt_int(prompt: str, default: int | None = None) -> int:
         except ValueError:
             print(f"{WARNING}[X] Please enter a valid integer.{ENDC}")
 
-
 def prompt_str(prompt: str, default: str | None = None) -> str:
     """
     Prompt the user for a string value.
@@ -2345,7 +2654,6 @@ def prompt_str(prompt: str, default: str | None = None) -> str:
     suffix = f" [default: {default}]" if default is not None else ""
     raw = input(f"{prompt}{suffix}: ").strip()
     return raw if raw else (default or "")
-
 
 def prompt_yes_no(prompt: str, default: bool = False) -> bool:
     """
@@ -2364,7 +2672,6 @@ def prompt_yes_no(prompt: str, default: bool = False) -> bool:
         return default
     return raw in ("y", "yes")
 
-
 def dump_one_file(ser, pcom):
     """
     Dump a PLC memory range to a single file
@@ -2373,30 +2680,17 @@ def dump_one_file(ser, pcom):
     :param pcom: PCOM_CLIENT instance
     """
     start = prompt_int("Start address", 0x0)
-    end = prompt_int("End address (non-inclusive)", 0x100000)
+    end = prompt_int("End address (non-inclusive)", 0x40000)
     flag = prompt_int("Memory flag", 1)
-    chunk = prompt_int("Chunk size", 0x100000)
+    filename = prompt_str("Output filename", "")
 
     if end <= start:
         print(f"{WARNING}[X] End must be greater than start.{ENDC}")
         return
 
-    out = prompt_str("Output filename (leave blank for auto)", "")
-    if not out:
-        out = f"ram_{hex(start)}_{hex(end)}_flag_{flag}_{int(time.time())}.bin"
+    read_memory(ser, pcom, loc_type = flag, start = start, end = end, filename = filename or None)
 
-    print(f"[-] Dumping {hex(start)}..{hex(end)} flag={flag} -> {out}")
-    cur = start
-    with open(out, "wb") as f:
-        while cur < end:
-            nxt = min(cur + chunk, end)
-            length = nxt - cur
-            data = do_read(ser, pcom, addr=cur, length=length, flag=flag)
-            f.write(data)
-            cur = nxt
-
-    print(f"[-] Saved dump to: {out}")
-
+    print(f"[-] Saved dump to: {filename}")
 
 def project_zip_dump(ser, pcom):
     """
@@ -2423,6 +2717,8 @@ def project_zip_dump(ser, pcom):
             f.write(payload)
         print(f"[-] Saved: {out}")
 
+# SYSTEM/MEMORY VALUE DUMPS
+
 def dump_system_integers_csv(ser, pcom_client, filename: str | None = None, out = print) -> str | None:
     """
     """
@@ -2436,7 +2732,7 @@ def dump_system_integers_csv(ser, pcom_client, filename: str | None = None, out 
 
     with open(filename, "w", newline = "") as f:
         writer = csv.writer(f)
-        writer.writerow(["address", "decimal", "description"])
+        writer.writerow(["address", "value", "description"])
 
         for start in range(0, MAX_SI, CHUNK):
             count = min(CHUNK, MAX_SI - start)
@@ -2488,6 +2784,206 @@ def dump_system_bits_csv(ser, pcom_client, filename: str | None = None, out = pr
     out(f"[-] Saved: {filename}")
     return filename
 
+def dump_memory_bits_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"mb_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 255, 8192
+    out(f"[-] Sweeping MB0 to MB{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_bits(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_bits(resp)
+            if values is None:
+                out(f"[X] No response MB{start} -> MB{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, 1 if val else 0])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_memory_integers_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"mi_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 64, 4096
+    out(f"[-] Sweeping MI0 to MI{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_integers(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_integers(resp)
+            if values is None:
+                out(f"[X] No response MI{start} -> MI{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_memory_longs_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"ml_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 512
+    out(f"[-] Sweeping ML0 to ML{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_longs(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_longs(resp)
+            if values is None:
+                out(f"[X] No response ML{start} -> ML{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_memory_double_words_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"mdw_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 256
+    out(f"[-] Sweeping MDW0 to MDW{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_double_words(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_double_words(resp)
+            if values is None:
+                out(f"[X] No response MDW{start} -> MDW{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_memory_floats_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"mf_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 64
+    out(f"[-] Sweeping MF0 to MF{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_memory_floats(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_memory_floats(resp)
+            if values is None:
+                out(f"[X] No response MF{start} -> MF{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, f"{val:.6f}"])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_system_longs_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"sl_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 56
+    out(f"[-] Sweeping SL0 to SL{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_system_longs(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_system_longs(resp)
+            if values is None:
+                out(f"[X] No response SL{start} -> SL{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_system_double_words_csv(ser, pcom_client, filename = None, out = print) -> str | None:
+    """
+    """
+    pcom = pcom_client
+    filename = filename or f"sdw_dump_{int(time.time())}.csv"
+    CHUNK, MAX = 32, 64
+    out(f"[-] Sweeping SDW0 to SDW{MAX - 1}...")
+    with open(filename, "w", newline = "") as f:
+        writer = csv.writer(f)
+        writer.writerow(["address", "value"])
+        for start in range(0, MAX, CHUNK):
+            count = min(CHUNK, MAX - start)
+            ser.write(pcom.create_read_system_double_words(start = start, count = count))
+            resp = ser.read(1024 * 5)
+            values = pcom.parse_read_system_double_words(resp)
+            if values is None:
+                out(f"[X] No response SDW{start} -> SDW{start + count - 1}, skipping.")
+                continue
+            for i, val in enumerate(values):
+                writer.writerow([start + i, val])
+    out(f"[-] Saved: {filename}")
+    return filename
+
+def dump_all_csv(ser, pcom_client, folder: str | None = None, out = print) -> str:
+    """
+    Dump all operand types to CSV files in a single timestamped folder.
+
+    :param ser: open serial connection object
+    :param pcom_client: PCOM_CLIENT instance
+    :param folder: output folder path, auto-generated if None
+    :type folder: str | None
+    :param out: callable for output, defaults to print
+    :type out: callable
+    :return: path to folder
+    :rtype: str
+    """
+    import os
+    folder = folder or f"dump_{int(time.time())}"
+    os.makedirs(folder, exist_ok = True)
+    out(f"[-] Saving all operand CSVs to: {folder}/")
+
+    dumps = [
+        ("MB", dump_memory_bits_csv, "mb_dump.csv"),
+        ("MI", dump_memory_integers_csv, "mi_dump.csv"),
+        ("ML", dump_memory_longs_csv, "ml_dump.csv"),
+        ("MDW", dump_memory_double_words_csv, "mdw_dump.csv"),
+        ("MF", dump_memory_floats_csv, "mf_dump.csv"),
+        ("SB", dump_system_bits_csv, "sb_dump.csv"),
+        ("SI", dump_system_integers_csv, "si_dump.csv"),
+        ("SL", dump_system_longs_csv, "sl_dump.csv"),
+        ("SDW", dump_system_double_words_csv, "sdw_dump.csv"),
+    ]
+
+    for label, fn, fname in dumps:
+        out(f"[-] Dumping {label}...")
+        try:
+            fn(ser, pcom_client, filename = os.path.join(folder, fname), out = out)
+        except Exception as e:
+            out(f"[X] {label} dump failed: {e}")
+
+    out(f"[-] All dumps complete. Folder: {folder}/")
+    return folder
 
 def auth(ser, pcom):
     """
@@ -2499,7 +2995,6 @@ def auth(ser, pcom):
     pwd = prompt_str("Password (8 chars, will be padded/truncated)", "*" * 8)
     ok = upload_auth(ser, pcom, password=pwd)
     print("[-] Auth result:", "OK" if ok else "BAD")
-
 
 def stop_plc(ser, pcom):
     """
@@ -2519,6 +3014,201 @@ def stop_plc(ser, pcom):
         pcom.print_pcom_ascii(resp)
     print("[-] Stop command sent.")
 
+def sweep_resource_ids(ser, pcom_client, out=print) -> None:
+    """
+    Sweep all 255 resource IDs and log the address, size, and resource ID
+    returned by the PLC for each one.
+    """
+    import csv
+
+    pcom = pcom_client
+    filename = f"resource_sweep_{int(time.time())}.csv"
+
+    out(f"[-] Sweeping all 255 resource IDs...")
+
+    results = []
+
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["resource_id", "address", "size", "res_id_returned", "notes"])
+
+        for rid in range(256):
+            try:
+                ser.write(pcom.create_where_resource(rid))
+                resp = ser.read(1024 * 5)
+
+                if len(resp) < 24 + 12 + 3:
+                    out(f"  ID {rid:3d}: response too short")
+                    writer.writerow([rid, "", "", "", "too short"])
+                    continue
+
+                addr, size, res_id_returned = pcom.parse_where_resource(resp)
+
+                notes = []
+                if addr == 0 and size == 0:
+                    notes.append("null")
+                if rid == RESOURCE_ID_PROJECT_ZIP:
+                    notes.append("PROJECT_ZIP")
+                if rid == 0x0d:
+                    notes.append("RESOURCE_TABLE")
+                if size > 0:
+                    notes.append(f"addr={hex(addr)}")
+
+                note_str = " ".join(notes)
+                out(f"  ID {rid:3d}: addr={hex(addr):<12} size={hex(size):<10} returned_id={res_id_returned:<5} {note_str}")
+                writer.writerow([rid, hex(addr), hex(size), res_id_returned, note_str])
+                results.append((rid, addr, size, res_id_returned))
+
+            except Exception as e:
+                out(f"  ID {rid:3d}: ERROR - {e}")
+                writer.writerow([rid, "", "", "", f"error: {e}"])
+
+    # Summary - only non-null entries
+    out(f"\n[-] Non-null results:")
+    for rid, addr, size, ret in results:
+        if addr != 0 or size != 0:
+            out(f"  ID {rid:3d}: addr={hex(addr)}  size={hex(size)}  returned_id={ret}")
+
+    out(f"[-] Saved to {filename}")
+
+def profile_memory_map(
+        ser,
+        pcom_client,
+        start: int = 0,
+        end: int = 0x1000000,
+        stride: int = 0x10000,
+        probe_size: int = 512,
+        flag: int = 0,
+        filename: str | None = None,
+        out = print
+        ) -> str | None:
+    """
+    Build a coarse structural map of a PLC address space by sparse probing.
+
+    Reads a small `probe_size` window at every `stride` bytes and records, per
+    probe: Shannon entropy, %0xFF, %0x00, an MD5, and a hex/ASCII preview. Because
+    a probe <= 976 bytes is a single PCOM read (one round trip), the full 16 MB
+    space is characterized in a few hundred requests instead of a full dump.
+
+    The CSV reveals region boundaries (fill vs content), high-entropy blobs
+    (code / compressed / live RAM), and address aliasing (identical MD5s at
+    multiple offsets, e.g. the app image mirrored across banks, or the wrap point
+    if `end` is set past 0x1000000).
+
+    :param ser: an open serial object
+    :param pcom_client: PCOM_CLIENT instance
+    :param start: first address to probe
+    :type start: int
+    :param end: one-past-last address to probe
+    :type end: int
+    :param stride: distance between probe start addresses
+    :type stride: int
+    :param probe_size: bytes per probe (keep <= 976 for one request each)
+    :type probe_size: int
+    :param flag: memory/region selector (0 = OS/firmware flash, 1 = application)
+    :type flag: int
+    :param filename: output CSV path (auto-named if None)
+    :type filename: str | None
+    :return: the CSV filename, or None if nothing was probed
+    :rtype: str | None
+    """
+    import math, hashlib
+
+    pcom = pcom_client
+
+    if end <= start:
+        out(f"[X] end ({hex(end)}) must be greater than start ({hex(start)})")
+        return None
+    if probe_size > 976:
+        out(f"{WARNING}[!] probe_size {probe_size} > 976; each probe will span multiple requests.{ENDC}")
+
+    filename = filename or f"memmap_flag{flag}_{hex(start)}_{hex(end)}_{int(time.time())}.csv"
+
+    def shannon(buf: bytes) -> float:
+        if not buf:
+            return 0.0
+        counts = [0] * 256
+        for b in buf:
+            counts[b] += 1
+        n = len(buf)
+        h = 0.0
+        for c in counts:
+            if c:
+                p = c / n
+                h -= p * math.log2(p)
+        return h
+
+    n_probes = (end - start + stride - 1) // stride
+    out(f"[-] Profiling flag={flag} {hex(start)}..{hex(end)}: {n_probes} probes x {probe_size} B (stride {hex(stride)})")
+
+    seen = {}  # md5 -> {"offsets": [...], "fill": bool, "H": float}
+
+    old_timeout = ser.timeout
+    ser.timeout = 0.125  # same trick read_memory uses to avoid dead-wait per response
+
+    try:
+        with open(filename, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["offset", "offset_hex", "entropy", "pct_ff", "pct_00", "md5", "first16_hex", "ascii_preview"])
+
+            addr = start
+            i = 0
+            while addr < end:
+                probe = do_read(ser, pcom, addr=addr, length=probe_size, flag=flag, out=lambda *a, **k: None)
+
+                if not probe:
+                    writer.writerow([addr, hex(addr), "", "", "", "", "", "no_response"])
+                    addr += stride
+                    i += 1
+                    continue
+
+                n = len(probe)  # do_read may return short; classify only what arrived
+                ff = probe.count(0xff)
+                zz = probe.count(0x00)
+                h = shannon(probe)
+                digest = hashlib.md5(probe).hexdigest()
+                preview = "".join(chr(b) if 32 <= b < 127 else "." for b in probe[:24])
+
+                writer.writerow([addr, hex(addr), f"{h:.3f}", f"{100*ff/n:.1f}",
+                                 f"{100*zz/n:.1f}", digest[:12], probe[:16].hex(), preview])
+
+                rec = seen.get(digest)
+                if rec is None:
+                    seen[digest] = {"offsets": [addr], "fill": len(set(probe)) == 1, "H": h}
+                else:
+                    rec["offsets"].append(addr)
+
+                if i % 32 == 0:
+                    out(f"    {hex(addr)}  H={h:5.2f}  FF={100*ff/n:5.1f}%  {preview}")
+
+                addr += stride
+                i += 1
+    finally:
+        ser.timeout = old_timeout
+
+    # Aliasing summary: content mirrors first (the interesting structure), fill runs second.
+    content = sorted(((d, r) for d, r in seen.items() if len(r["offsets"]) > 1 and not r["fill"]),
+                     key=lambda kv: -len(kv[1]["offsets"]))
+    fill    = sorted(((d, r) for d, r in seen.items() if len(r["offsets"]) > 1 and r["fill"]),
+                     key=lambda kv: -len(kv[1]["offsets"]))
+
+    if content:
+        out(f"\n[-] Mirrored CONTENT (identical non-fill probe at multiple offsets) - {len(content)} groups:")
+        for d, r in content[:20]:
+            offs = r["offsets"]
+            sample = ", ".join(hex(o) for o in offs[:8])
+            more = "" if len(offs) <= 8 else f" ... (+{len(offs)-8} more)"
+            out(f"    {d[:12]}  H={r['H']:4.1f}  x{len(offs):<4} {sample}{more}")
+    else:
+        out(f"\n[-] No mirrored content at this stride.")
+
+    if fill:
+        total = sum(len(r["offsets"]) for _, r in fill)
+        out(f"[-] Fill regions (constant-byte probes): {total} probes across {len(fill)} value(s).")
+
+    out(f"[-] Saved memory map to: {filename}")
+    return filename
+
 def main() -> None:
     """
     Entry point
@@ -2531,7 +3221,7 @@ def main() -> None:
         return
     ser, pcom = result
 
-    dump_system_bits_csv(ser, pcom)
+    upload_auth(ser, pcom, "12345678")
 
     try:
         while True:
@@ -2547,6 +3237,8 @@ def main() -> None:
             print(" 9) Toggle debugMode (currently: {})".format("ON" if pcom.debugMode else "OFF"))
             print(" 10) Read System Integer")
             print(" 11) Read Information Mode Password")
+            print(" 12) Dump ALL operands to CSV folder")
+            print(" 13) Profile Memory Map (coarse entropy scan)")
             print(" 0) Exit")
 
             choice = input("Select an option: ").strip()
@@ -2580,6 +3272,14 @@ def main() -> None:
             elif choice == "11":
                 password = read_system_integers(ser, pcom, start = 253, count = 1)
                 print(f"[-] Information Mode Password: {password}")
+            elif choice == "12":
+                folder = dump_all_csv(ser, pcom)
+            elif choice == "13":
+                profile_memory_map(ser, pcom, start = prompt_int("Start address", 0x0),
+                                   end = prompt_int("End address", 0x1000000),
+                                      stride = prompt_int("Stride", 0x10000),
+                                        probe_size = prompt_int("Probe size", 512),
+                                            flag = prompt_int("Memory flag", 1))  
             else:
                 print("  [!] Invalid choice. Pick a number from the menu.")
 
@@ -2588,7 +3288,6 @@ def main() -> None:
             ser.close()
         except Exception:
             pass
-
-     
+ 
 if __name__ == "__main__":
     main()
