@@ -621,23 +621,94 @@ class PCOM_CLIENT:
         opcode_message = opcode_table.get(opcode, "")
         self.out(f"{direction}: ASCII PCOM Command {opcode_message} ({opcode.decode()})")
         self.out(data)
-
-    def extract_pcom_data(self, data: bytes) -> bytes:
+    
+    def _verify_footer_crc(self, frame: bytes) -> bool:
         """
-        Extract the payload from a binary PCOM response frame.
-        
-        :param data: raw bytes received from the PLC
+        Verify the footer CRC on a received binary PCOM frame.
+
+        The footer CRC covers the header + payload only (the same region
+        calc_binary_footer_crc computes over when building outgoing requests).
+        If the payload was empty, the PLC sends b'\\x00\\x00' as the footer
+        CRC (mirroring how create_binary_request skips the real CRC when
+        command_data is empty), so that case is treated as valid by
+        definition rather than checked numerically.
+
+        :param frame: the full frame, TCP header already stripped, footer included
+        :type frame: bytes
+        :return: True if the footer CRC matches (or payload was empty), False otherwise
+        :rtype: bool
+        """
+        payload_len = struct.unpack("<H", frame[20:22])[0]
+        footer_crc = frame[-3:-1]
+
+        if payload_len == 0:
+            return footer_crc == b'\x00\x00'
+
+        expected = self.calc_binary_footer_crc(frame[:-3])  # header + payload, no footer
+        return footer_crc == expected
+
+    def extract_pcom_data(self, data: bytes, expected_payload_len: int | None = None,
+                        expected_opcode: int = 0x81, out = print) -> bytes | None:
+        """
+        Extract and validate the payload from a binary PCOM response frame.
+
+        Checks, in order: frame is long enough to contain header + footer,
+        the frame's declared payload length matches what was expected (if
+        supplied), the opcode matches what was expected, and the footer CRC
+        is valid.
+
+        Unlike a raising validator, any failure here is reported through
+        `out` with a specific diagnostic and the function returns None. This
+        is deliberate: a single corrupted or truncated chunk should not halt
+        a multi-chunk memory read in progress — the caller decides whether
+        to retry, pad, or skip that chunk and keep going.
+
+        :param data: raw bytes received from the PLC (TCP header still attached, if isTcp)
         :type data: bytes
-        :return: the payload bytes between header and footer
-        :rtype: bytes
+        :param expected_payload_len: payload length the caller was expecting, if known
+        :type expected_payload_len: int | None
+        :param expected_opcode: opcode this response should carry
+        :type expected_opcode: int
+        :param out: callable used to report a validation failure
+        :return: the validated payload bytes, or None if any check failed
+        :rtype: bytes | None
         """
-
-        # Move after the PCOM/TCP header
-
         if self.isTcp:
             data = data[self.PCOM_TCP_HEADER_SIZE:]
+
         if self.debugMode:
             self.print_pcom_binary(data)
+
+        if len(data) < self.PCOM_HEADER_SIZE + self.PCOM_BINARY_FOOTER_SIZE:
+            out(f"[X] Frame too short: {len(data)} bytes, need at least "
+                f"{self.PCOM_HEADER_SIZE + self.PCOM_BINARY_FOOTER_SIZE}")
+            return None
+
+        declared_payload_len = struct.unpack("<H", data[20:22])[0]
+        expected_total = self.PCOM_HEADER_SIZE + declared_payload_len + self.PCOM_BINARY_FOOTER_SIZE
+
+        if len(data) != expected_total:
+            out(f"[X] Frame length mismatch: got {len(data)} bytes, header declares "
+                f"payload_len={declared_payload_len} (expects {expected_total} total)")
+            return None
+
+        if expected_payload_len is not None and declared_payload_len != expected_payload_len:
+            out(f"[X] Payload length mismatch: requested {expected_payload_len} bytes, "
+                f"PLC declares {declared_payload_len} in response header")
+            return None
+
+        opcode = data[12]
+        if opcode == 0xFF:
+            out(f"[X] PLC returned Error opcode (0xFF), reserved byte={hex(data[13])}")
+            return None
+        if opcode != expected_opcode:
+            out(f"[X] Unexpected opcode {hex(opcode)}, expected {hex(expected_opcode)}")
+            return None
+
+        if not self._verify_footer_crc(data):
+            out(f"[X] Footer CRC mismatch, response is corrupted")
+            return None
+
         return data[self.PCOM_HEADER_SIZE:-self.PCOM_BINARY_FOOTER_SIZE]
 
     def make_tcp(self,data: bytes, isAscii: bool = False) -> bytes:
@@ -2066,12 +2137,71 @@ class PCOM_CLIENT:
 
 # OUTSIDE OF PCOM_CLIENT CLASS
 
-def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size:int = 976, out = print) -> bytes:
+def read_binary_frame(ser, isTcp: bool = False, out = print) -> bytes:
+    """
+    Read exactly one binary PCOM response frame from the serial port,
+    using the frame's own declared length instead of guessing a buffer size.
+
+    Reads the (TCP header +) 24-byte PCOM header first, decodes the
+    payload length the PLC itself reported at offset [20:22], then reads
+    exactly that many payload bytes plus the 3-byte footer. Returns the
+    raw frame bytes (TCP header included, if present) exactly as received,
+    with no slicing performed here — extract_pcom_data still does that,
+    but now it will always receive a length it can trust.
+
+    Returns b"" if the header or the declared payload+footer never fully
+    arrived within the port's timeout — this is the signal that a chunk
+    was truncated, instead of extract_pcom_data silently slicing garbage.
+
+    :param ser: an open serial object
+    :param isTcp: whether the PCOM/TCP wrapper is in use
+    :type isTcp: bool
+    :return: the complete raw frame, or b"" on truncation/timeout
+    :rtype: bytes
+    """
+    PCOM_TCP_HEADER_SIZE = 6
+    PCOM_HEADER_SIZE = 24
+    PCOM_BINARY_FOOTER_SIZE = 3
+
+    header_len = (PCOM_TCP_HEADER_SIZE if isTcp else 0) + PCOM_HEADER_SIZE
+
+    header = ser.read(header_len)
+    if len(header) < header_len:
+        out(f"[X] Truncated header: got {len(header)}/{header_len} bytes")
+        return b""
+
+    # Payload length lives at the same offset inside the PCOM header
+    # whether or not the TCP wrapper is present, since we sliced the
+    # TCP bytes off the front of `header_len` already.
+    length_field_start = (PCOM_TCP_HEADER_SIZE if isTcp else 0) + 20
+    payload_len = struct.unpack("<H", header[length_field_start:length_field_start + 2])[0]
+
+    remaining = payload_len + PCOM_BINARY_FOOTER_SIZE
+    rest = ser.read(remaining)
+    if len(rest) < remaining:
+        out(f"[X] Truncated payload/footer: got {len(rest)}/{remaining} bytes "
+            f"(header declared payload_len={payload_len})")
+        return b""
+
+    return header + rest
+
+def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size: int = 976,
+            max_retries: int = 3, out = print) -> tuple[bytes, list[tuple[int, int]]]:
     """
     Read a section of PLC memory in chunks and return the concatenated bytes.
-    
+
+    Each chunk is requested, then read back using read_binary_frame (which
+    reads exactly the declared frame length rather than guessing a buffer
+    size) and validated through extract_pcom_data (length, opcode, CRC).
+
+    If a chunk fails validation, the same read request is retried up to
+    max_retries times before giving up on that chunk. A chunk that never
+    validates is padded with a 0xAA sentinel of the correct size, so every
+    later byte in the returned buffer still lines up with its true PLC
+    address — offsets never silently shift due to a dropped chunk.
+
     :param ser: an open serial object
-    :param pcom_client: PCOM_CLIENT instance 
+    :param pcom_client: PCOM_CLIENT instance
     :param addr: starting memory address
     :type addr: int
     :param length: total number of bytes to read
@@ -2080,26 +2210,56 @@ def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size:int =
     :type flag: int
     :param read_size: maximum number of bytes to request per read
     :type read_size: int
-    :return: the requested memory region as a single bytes object
-    :rtype: bytes
+    :param max_retries: number of times to retry a single chunk before padding
+    :type max_retries: int
+    :return: tuple of (concatenated bytes, list of (addr, size) ranges that
+             failed all retries and were padded with sentinel bytes)
+    :rtype: tuple[bytes, list[tuple[int, int]]]
     """
     pcom = pcom_client
     read_bytes = 0
     res = b""
+    failed_ranges = []
+    SENTINEL = 0xAA
 
     while read_bytes < length:
         out(f"[-] Reading from address: {hex(addr)} ({(read_bytes/length)*100:.2f}%)")
-        size = min(read_size, length - read_bytes) #checks to see if the size of the memory to be read will be the read size of 976 or the remaining memory to be read
-        read_mem = pcom.create_read_memory(struct.pack("<I", addr), size, flag = flag) #Creates the command
-        ser.write(read_mem) #Sends command
+        size = min(read_size, length - read_bytes)
+
+        chunk = None
+        for attempt in range(1, max_retries + 1):
+            read_mem = pcom.create_read_memory(struct.pack("<I", addr), size, flag=flag)
+            ser.write(read_mem)
+            resp = read_binary_frame(ser, isTcp=pcom.isTcp, out=out)
+
+            if resp:
+                chunk = pcom.extract_pcom_data(resp, expected_payload_len=size, out=out)
+
+            if chunk is not None:
+                if attempt > 1:
+                    out(f"    [-] Chunk at {hex(addr)} recovered on attempt {attempt}")
+                break
+
+            out(f"    [!] Chunk at {hex(addr)} failed validation (attempt {attempt}/{max_retries})")
+
+        if chunk is None:
+            out(f"[X] Chunk at {hex(addr)} size {hex(size)} failed after {max_retries} attempts, "
+                f"padding with 0x{SENTINEL:02X}")
+            chunk = bytes([SENTINEL]) * size
+            failed_ranges.append((addr, size))
+
+        res += chunk
         read_bytes += size
         addr += size
-        resp = ser.read(1024*5)
-        res += pcom.extract_pcom_data(resp)
-    
+
     out(f"[-] Read is completed (100%)")
-    
-    return res
+    if failed_ranges:
+        out(f"[!] {len(failed_ranges)} chunk(s) could not be validated and were padded with "
+            f"0x{SENTINEL:02X} - do not treat these ranges as real PLC content:")
+        for fa, fs in failed_ranges:
+            out(f"      {hex(fa)} - {hex(fa + fs)} ({fs} bytes)")
+
+    return res, failed_ranges
 
 def do_write(ser, pcom_client, addr: int, data: bytes, flag: int, out = print) -> None:
     """
@@ -2304,43 +2464,51 @@ def print_signature_table(ser, pcom_client, log_fn = None) -> None:
     sig_table_data = do_read(ser=s, pcom_client=pcom,addr=addr, length=sigTable_size, flag=4, out = out)
     sigTable = pcom.parse_signature(sig_table_data, out = out)
 
-def read_project_zip(ser, pcom_client, out = print) -> bytes:
+def read_project_zip(ser, pcom_client, out = print) -> tuple[bytes, list[tuple[int, int]]]:
     """
     Locate and read the PLC project ZIP resource from PLC memory.
-    
+
     :param ser: an open serial object
     :param pcom_client: PCOM_CLIENT instance
-    :return: raw bytes of the project ZIP resource as read from the PLC
-    :rtype: bytes
+    :return: tuple of (raw bytes of the project ZIP resource, list of
+             (addr, size) ranges that failed validation and were padded
+             with sentinel bytes during the read)
+    :rtype: tuple[bytes, list[tuple[int, int]]]
     """
     s = ser
     pcom = pcom_client
     where_resource_id_req = pcom.create_where_resource(resource_id = RESOURCE_ID_PROJECT_ZIP)
     s.write(where_resource_id_req)
-    resp = s.read(1024*5)
+    resp = read_binary_frame(s, isTcp = pcom.isTcp, out = out)
     addr, size, res_id = pcom.parse_where_resource(resp)
     out(f"[-] Project ZIP: addr={hex(addr)} size={hex(size)} flag={res_id}")
-    project_zip_data = do_read(ser=s, pcom_client=pcom, addr=addr, length=size, flag=res_id, out = out) # flag should be 1
-    return project_zip_data
+    project_zip_data, failed_ranges = do_read(ser=s, pcom_client=pcom, addr=addr, length=size, flag=res_id, out = out) # flag should be 1
+    return project_zip_data, failed_ranges
 
-def read_and_save_project_zip(ser, pcom_client, filename: str | None = None, out = print) -> str:
+def read_and_save_project_zip(ser, pcom_client, filename: str | None = None, out = print) -> tuple[str, list[tuple[int, int]]]:
     """
     Read the PLC project ZIP resource and save it to a local .zip file.
-    
+
     :param ser: an open serial object
     :param pcom_client: PCOM_CLIENT instance
-    :return: The filename of the saved ZIP
-    :rtype: str
+    :return: tuple of (filename of the saved ZIP, list of (addr, size)
+             ranges that failed validation during the read and were padded)
+    :rtype: tuple[str, list[tuple[int, int]]]
     """
     pcom = pcom_client
     s = ser
     name = filename or f"project_{int(time.time())}.zip"
-    project_zip = read_project_zip(s, pcom, out = out)
+    project_zip, failed_ranges = read_project_zip(s, pcom, out = out)
     project_zip = project_zip[0x2a:]
     with open(name, "wb") as f:
         f.write(project_zip)
     out(f"[-] Saved project ZIP to: {name}")
-    return name
+    if failed_ranges:
+        out(f"[!] Warning: {len(failed_ranges)} chunk(s) in this ZIP could not be validated "
+            f"and were padded with 0xAA - the saved file may be corrupt at those offsets:")
+        for fa, fs in failed_ranges:
+            out(f"      {hex(fa)} - {hex(fa + fs)} ({fs} bytes)")
+    return name, failed_ranges
 
 def read_memory(
         ser, 
@@ -2350,7 +2518,7 @@ def read_memory(
         end: int = 0x100000, 
         filename: str | None = None,
         out = print
-        ) -> str:
+        ) -> tuple[str, list[tuple[int, int]]]:
     """
     Dump a region of PLC memory to a binary file.
     
@@ -2362,12 +2530,13 @@ def read_memory(
     :type start: int
     :param end: ending memory address
     :type end: int
-    :return: filename of saved dump
-    :rtype: str
+    :return: tuple of (filename of saved dump, list of (addr, size) ranges
+             that failed validation and were padded with sentinel bytes)
+    :rtype: tuple[str, list[tuple[int, int]]]
     """
     if end <= start:
         out(f"[X] end ({hex(end)}) must be greater than start ({hex(start)})")
-        return ""
+        return "", []
 
     length = end - start
     out(f"[-] Dumping memory from {hex(start)} to {hex(end)} ({hex(length)} bytes, flag={loc_type})")
@@ -2375,12 +2544,14 @@ def read_memory(
     pcom = pcom_client
     filename = filename or f"ram_{hex(start)}_{hex(end)}_flag_{loc_type}_{int(time.time())}.bin"
 
-    # Reduce timeout for the dump to avoid 250ms dead-wait after each response
+    # Timeout can now be generous - read_binary_frame reads exactly the
+    # declared frame length instead of guessing a buffer size, so there's
+    # no more benefit to shrinking the timeout to force early returns.
     old_timeout = ser.timeout
-    ser.timeout = 0.125
+    ser.timeout = 1.0
 
     try:
-        data = do_read(ser, pcom, addr=start, length=length, flag=loc_type, out=out)
+        data, failed_ranges = do_read(ser, pcom, addr=start, length=length, flag=loc_type, out=out)
     finally:
         ser.timeout = old_timeout  # Always restore, even if do_read throws
 
@@ -2388,7 +2559,13 @@ def read_memory(
         f.write(data)
 
     out(f"[-] Saved dump to: {filename}")
-    return filename
+    if failed_ranges:
+        out(f"[!] {len(failed_ranges)} chunk(s) in this dump could not be validated and were "
+            f"padded with 0xAA - the following offsets are not real PLC content:")
+        for fa, fs in failed_ranges:
+            out(f"      {hex(fa)} - {hex(fa + fs)} ({fs} bytes)")
+
+    return filename, failed_ranges
 
 def write_memory(ser, pcom_client, addr: int, data: bytes, loc_type: int = 1, out = print) -> None:
     """
@@ -2688,9 +2865,11 @@ def dump_one_file(ser, pcom):
         print(f"{WARNING}[X] End must be greater than start.{ENDC}")
         return
 
-    read_memory(ser, pcom, loc_type = flag, start = start, end = end, filename = filename or None)
+    filename, failed_ranges = read_memory(ser, pcom, loc_type = flag, start = start, end = end, filename = filename or None)
 
     print(f"[-] Saved dump to: {filename}")
+    if failed_ranges:
+        print(f"{WARNING}[!] {len(failed_ranges)} chunk(s) were padded due to failed validation.{ENDC}")
 
 def project_zip_dump(ser, pcom):
     """
@@ -2699,8 +2878,14 @@ def project_zip_dump(ser, pcom):
     :param ser: open serial connection object
     :param pcom: PCOM_CLIENT instance
     """
-    data = read_project_zip(ser, pcom)
+    data, failed_ranges = read_project_zip(ser, pcom)
     print(f"[-] Read raw project resource: {len(data)} bytes")
+    if failed_ranges:
+        print(f"{WARNING}[!] {len(failed_ranges)} chunk(s) failed validation and were padded "
+              f"with 0xAA - this resource may be corrupt at those offsets:{ENDC}")
+        for fa, fs in failed_ranges:
+            print(f"      {hex(fa)} - {hex(fa + fs)} ({fs} bytes)")
+
     if len(data) > 0x2A:
         stripped = data[0x2A:]
         print(f"[-] After stripping 0x2A header: {len(stripped)} bytes")
@@ -3095,6 +3280,11 @@ def profile_memory_map(
     multiple offsets, e.g. the app image mirrored across banks, or the wrap point
     if `end` is set past 0x1000000).
 
+    Each probe now goes through do_read's retry-then-pad path. A probe that
+    failed all retries and was padded with the 0xAA sentinel is marked
+    "PADDED_FAILED_READ" in its own CSV column, so it is never mistaken for
+    a genuine constant-fill region during aliasing/fill analysis.
+
     :param ser: an open serial object
     :param pcom_client: PCOM_CLIENT instance
     :param start: first address to probe
@@ -3141,23 +3331,32 @@ def profile_memory_map(
     n_probes = (end - start + stride - 1) // stride
     out(f"[-] Profiling flag={flag} {hex(start)}..{hex(end)}: {n_probes} probes x {probe_size} B (stride {hex(stride)})")
 
-    seen = {}  # md5 -> {"offsets": [...], "fill": bool, "H": float}
+    seen = {}  # md5 -> {"offsets": [...], "fill": bool, "H": float, "any_padded": bool}
+    all_failed_ranges = []
 
     old_timeout = ser.timeout
-    ser.timeout = 0.125  # same trick read_memory uses to avoid dead-wait per response
+    ser.timeout = 1.0  # generous ceiling; read_binary_frame reads exact frame length, no need to shrink this
 
     try:
         with open(filename, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["offset", "offset_hex", "entropy", "pct_ff", "pct_00", "md5", "first16_hex", "ascii_preview"])
+            writer.writerow(["offset", "offset_hex", "entropy", "pct_ff", "pct_00", "md5",
+                              "first16_hex", "ascii_preview", "padded_failed_read"])
 
             addr = start
             i = 0
             while addr < end:
-                probe = do_read(ser, pcom, addr=addr, length=probe_size, flag=flag, out=lambda *a, **k: None)
+                # Progress spam still suppressed per-probe, but retry/failure
+                # warnings from do_read are captured here instead of discarded,
+                # so failed_ranges for this probe is never silently lost.
+                probe, failed_ranges = do_read(ser, pcom, addr=addr, length=probe_size, flag=flag,
+                                               out=lambda *a, **k: None)
+                probe_had_failure = len(failed_ranges) > 0
+                if probe_had_failure:
+                    all_failed_ranges.extend(failed_ranges)
 
                 if not probe:
-                    writer.writerow([addr, hex(addr), "", "", "", "", "", "no_response"])
+                    writer.writerow([addr, hex(addr), "", "", "", "", "", "no_response", "true"])
                     addr += stride
                     i += 1
                     continue
@@ -3170,16 +3369,20 @@ def profile_memory_map(
                 preview = "".join(chr(b) if 32 <= b < 127 else "." for b in probe[:24])
 
                 writer.writerow([addr, hex(addr), f"{h:.3f}", f"{100*ff/n:.1f}",
-                                 f"{100*zz/n:.1f}", digest[:12], probe[:16].hex(), preview])
+                                 f"{100*zz/n:.1f}", digest[:12], probe[:16].hex(), preview,
+                                 "true" if probe_had_failure else ""])
 
                 rec = seen.get(digest)
                 if rec is None:
-                    seen[digest] = {"offsets": [addr], "fill": len(set(probe)) == 1, "H": h}
+                    seen[digest] = {"offsets": [addr], "fill": len(set(probe)) == 1, "H": h,
+                                     "any_padded": probe_had_failure}
                 else:
                     rec["offsets"].append(addr)
+                    rec["any_padded"] = rec["any_padded"] or probe_had_failure
 
                 if i % 32 == 0:
-                    out(f"    {hex(addr)}  H={h:5.2f}  FF={100*ff/n:5.1f}%  {preview}")
+                    flag_str = " [PADDED]" if probe_had_failure else ""
+                    out(f"    {hex(addr)}  H={h:5.2f}  FF={100*ff/n:5.1f}%  {preview}{flag_str}")
 
                 addr += stride
                 i += 1
@@ -3187,9 +3390,14 @@ def profile_memory_map(
         ser.timeout = old_timeout
 
     # Aliasing summary: content mirrors first (the interesting structure), fill runs second.
-    content = sorted(((d, r) for d, r in seen.items() if len(r["offsets"]) > 1 and not r["fill"]),
+    # Groups containing any padded/failed probe are excluded from both — a probe
+    # that failed and got sentinel-padded is not real content and not a real fill,
+    # it's a gap in the data, so it shouldn't be presented as either finding.
+    content = sorted(((d, r) for d, r in seen.items()
+                      if len(r["offsets"]) > 1 and not r["fill"] and not r["any_padded"]),
                      key=lambda kv: -len(kv[1]["offsets"]))
-    fill    = sorted(((d, r) for d, r in seen.items() if len(r["offsets"]) > 1 and r["fill"]),
+    fill    = sorted(((d, r) for d, r in seen.items()
+                      if len(r["offsets"]) > 1 and r["fill"] and not r["any_padded"]),
                      key=lambda kv: -len(kv[1]["offsets"]))
 
     if content:
@@ -3205,6 +3413,15 @@ def profile_memory_map(
     if fill:
         total = sum(len(r["offsets"]) for _, r in fill)
         out(f"[-] Fill regions (constant-byte probes): {total} probes across {len(fill)} value(s).")
+
+    if all_failed_ranges:
+        out(f"\n[!] {len(all_failed_ranges)} probe(s) across the sweep failed validation and were "
+            f"padded with 0xAA - see the 'padded_failed_read' column in {filename} before "
+            f"drawing conclusions from those offsets:")
+        for fa, fs in all_failed_ranges[:20]:
+            out(f"      {hex(fa)} - {hex(fa + fs)} ({fs} bytes)")
+        if len(all_failed_ranges) > 20:
+            out(f"      ... (+{len(all_failed_ranges) - 20} more, see CSV)")
 
     out(f"[-] Saved memory map to: {filename}")
     return filename
