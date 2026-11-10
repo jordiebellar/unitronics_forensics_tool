@@ -626,24 +626,17 @@ class PCOM_CLIENT:
         """
         Verify the footer CRC on a received binary PCOM frame.
 
-        The footer CRC covers the header + payload only (the same region
-        calc_binary_footer_crc computes over when building outgoing requests).
-        If the payload was empty, the PLC sends b'\\x00\\x00' as the footer
-        CRC (mirroring how create_binary_request skips the real CRC when
-        command_data is empty), so that case is treated as valid by
-        definition rather than checked numerically.
+        The footer CRC covers the header + payload only. As of the
+        2026-08-27 fix, calc_binary_footer_crc correctly handles a
+        zero-sum payload (produces 0x0000, matching the PLC's own
+        checksum), so no special-case branch is needed here anymore.
 
         :param frame: the full frame, TCP header already stripped, footer included
         :type frame: bytes
-        :return: True if the footer CRC matches (or payload was empty), False otherwise
+        :return: True if the footer CRC matches, False otherwise
         :rtype: bool
         """
-        payload_len = struct.unpack("<H", frame[20:22])[0]
         footer_crc = frame[-3:-1]
-
-        if payload_len == 0:
-            return footer_crc == b'\x00\x00'
-
         expected = self.calc_binary_footer_crc(frame[:-3])  # header + payload, no footer
         return footer_crc == expected
 
@@ -737,31 +730,34 @@ class PCOM_CLIENT:
         Compute the 16-bit checksum for the binary PCOM header.
         The CRC is computed over the first 22 bytes of the header.
 
-        ALGORITHM:
-              sum all bytes
-              constrain to 16 bits
-              compute 2's complement
-              return as little endian uint16
-        
+        ALGORITHM (corrected 2026-08-27, confirmed against live device
+        behavior via hotspot_hammer log analysis - the previous formula
+        diverged from the PLC's own two's-complement checksum by exactly 1
+        whenever the summed bytes totaled an exact multiple of 0x10000,
+        which is silent and deterministic, not related to wire noise or
+        live memory as originally suspected):
+            sum all bytes
+            negate modulo 65536 (proper 16-bit two's complement)
+            return as little endian uint16
+
         :param data: the partially built header bytes
         :type data: bytes
         :return: 2 byte CRC
         :rtype: bytes
         """
         # Packet[0:22]
-        return struct.pack("<H", (( ~ (sum(data[0:22]) % 0x10_000) + 1 ) % 0xffff + 1))
-   
+        return struct.pack("<H", (-sum(data[0:22])) & 0xFFFF)
+
     def calc_binary_footer_crc(self, data: bytes) -> bytes:
         """
         Compute the 16-bit checksum for the binary PCOM payload section.
 
         The footer CRC is calculated over the payload bytes only.
 
-        ALGORITHM:
-              sum all bytes
-              constrain to 16 bits
-              compute 2's complement
-              return as little endian uint16
+        ALGORITHM (corrected 2026-08-27, same fix as calc_binary_header_crc):
+            sum all bytes
+            negate modulo 65536 (proper 16-bit two's complement)
+            return as little endian uint16
 
         :param data: full binary PCOM frame before footer CRC
         :type data: bytes
@@ -769,7 +765,7 @@ class PCOM_CLIENT:
         :rtype: bytes
         """
         # Packet[24:-3]
-        return struct.pack("<H", (( ~ (sum(data[self.PCOM_HEADER_SIZE:]) % 0x10_000) + 1 ) % 0xffff + 1))
+        return struct.pack("<H", (-sum(data[self.PCOM_HEADER_SIZE:])) & 0xFFFF)
 
     def calc_ascii_crc(self, data: bytes) -> bytes:
         """
@@ -1278,7 +1274,7 @@ class PCOM_CLIENT:
         results = []
         for i in range(0, len(payload), 4):
             try:
-                raw = int(payload[i: i+4], 15)
+                raw = int(payload[i: i+4], 16)
             except ValueError:
                 return None
             if raw >= 0x8000:
@@ -1399,6 +1395,33 @@ class PCOM_CLIENT:
         """
         payload = f"{address:04X}01".encode() + (b"1" if value else b"0")
         return self._build_ascii_request(b"SS", payload)
+
+# WRITE MEMORY INTEGERS (JORDIE)
+
+    def create_write_memory_integers(self, start: int, values: list[int]) -> bytes:
+        """
+        Build an ASCII PCOM request to write one or more consecutive MI
+        (memory integer) addresses.
+
+        Mirrors create_write_system_integer's payload shape (address, count,
+        then one 4-hex-digit value per address), but uses the "SW" opcode -
+        the write counterpart to "RW" (create_read_memory_integers), the
+        same R/S pairing already used for system integers (GF read / SF
+        write). Values are masked to 16 bits so negative ints round-trip
+        the same way parse_read_memory_integers un-masks them.
+
+        :param start: first MI address to write
+        :type start: int
+        :param values: values to write starting at `start`, one per
+                       consecutive address (start, start+1, start+2, ...)
+        :type values: list[int]
+        :return: the complete ASCII PCOM request
+        :rtype: bytes
+        """
+        payload = f"{start:04X}{len(values):02X}".encode()
+        for value in values:
+            payload += f"{value & 0xFFFF:04X}".encode()
+        return self._build_ascii_request(b"SW", payload)
 
 # READ OPERAND *** IGNORE RESPONSE LATER? *** *** PARSE IS NOT IMPLEMENTED ***
 
@@ -1729,14 +1752,11 @@ class PCOM_CLIENT:
         #   PCOM_DATA (should be <= size 10)
         #   OPLC_FOOTER (size 3)
 
-        # PCOM_DATA Struct:
-        #   ???? (size 4)
-        #   Index Address (Size 4)
-        #   Content Length (Size 2)
-
-        # ***** THIS IS A LITTLE SUS *****
-        # ???? is supposed to be 4 bytes but is represented here as 2
-        # Something is wrong
+        # PCOM_DATA Struct (confirmed against live capture, 2026-08-27):
+        #   Tag/status (size 2) - byte 0 echoes the request's constant tag byte (0x64)
+        #   Address (size 4, little-endian)
+        #   Size (size 2, little-endian)
+        #   Reserved/unused (size 2, observed as 0x0000)
 
         address = data[self.PCOM_HEADER_SIZE + 2: self.PCOM_HEADER_SIZE + 6]
         size = struct.unpack(
@@ -2186,7 +2206,7 @@ def read_binary_frame(ser, isTcp: bool = False, out = print) -> bytes:
     return header + rest
 
 def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size: int = 976,
-            max_retries: int = 3, out = print) -> tuple[bytes, list[tuple[int, int]]]:
+            max_retries: int = 3, out = print, log_path: str | None = None) -> tuple[bytes, list[tuple[int, int]]]:
     """
     Read a section of PLC memory in chunks and return the concatenated bytes.
 
@@ -2198,7 +2218,17 @@ def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size: int 
     max_retries times before giving up on that chunk. A chunk that never
     validates is padded with a 0xAA sentinel of the correct size, so every
     later byte in the returned buffer still lines up with its true PLC
-    address — offsets never silently shift due to a dropped chunk.
+    address - offsets never silently shift due to a dropped chunk.
+
+    If log_path is given, every retry attempt and permanent failure is
+    appended to that file as a timestamped, structured line: address,
+    attempt number, the specific validation failure reason, and the full
+    raw frame hex actually received on that attempt (or "(no frame
+    received)" if read_binary_frame itself returned nothing). Comparing
+    the raw_frame hex across multiple failed attempts at the same address
+    is what lets you tell a deterministic readback fault (identical
+    corrupted bytes every attempt) apart from a genuine data race
+    (different bytes each attempt) after the fact.
 
     :param ser: an open serial object
     :param pcom_client: PCOM_CLIENT instance
@@ -2212,6 +2242,9 @@ def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size: int 
     :type read_size: int
     :param max_retries: number of times to retry a single chunk before padding
     :type max_retries: int
+    :param log_path: path to a .txt file to append structured retry/failure
+                      events to, or None to skip file logging entirely
+    :type log_path: str | None
     :return: tuple of (concatenated bytes, list of (addr, size) ranges that
              failed all retries and were padded with sentinel bytes)
     :rtype: tuple[bytes, list[tuple[int, int]]]
@@ -2222,35 +2255,59 @@ def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size: int 
     failed_ranges = []
     SENTINEL = 0xAA
 
-    while read_bytes < length:
-        out(f"[-] Reading from address: {hex(addr)} ({(read_bytes/length)*100:.2f}%)")
-        size = min(read_size, length - read_bytes)
+    log_file = open(log_path, "a", encoding="utf-8") if log_path else None
 
-        chunk = None
-        for attempt in range(1, max_retries + 1):
-            read_mem = pcom.create_read_memory(struct.pack("<I", addr), size, flag=flag)
-            ser.write(read_mem)
-            resp = read_binary_frame(ser, isTcp=pcom.isTcp, out=out)
+    def log_line(msg: str) -> None:
+        if log_file is None:
+            return
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        log_file.write(f"{timestamp}  {msg}\n")
+        log_file.flush()
 
-            if resp:
-                chunk = pcom.extract_pcom_data(resp, expected_payload_len=size, out=out)
+    try:
+        while read_bytes < length:
+            out(f"[-] Reading from address: {hex(addr)} ({(read_bytes/length)*100:.2f}%)")
+            size = min(read_size, length - read_bytes)
 
-            if chunk is not None:
-                if attempt > 1:
-                    out(f"    [-] Chunk at {hex(addr)} recovered on attempt {attempt}")
-                break
+            chunk = None
+            for attempt in range(1, max_retries + 1):
+                captured = []
+                def capture_out(msg, _captured=captured):
+                    _captured.append(msg)
+                    out(msg)
 
-            out(f"    [!] Chunk at {hex(addr)} failed validation (attempt {attempt}/{max_retries})")
+                read_mem = pcom.create_read_memory(struct.pack("<I", addr), size, flag=flag)
+                ser.write(read_mem)
+                resp = read_binary_frame(ser, isTcp=pcom.isTcp, out=capture_out)
 
-        if chunk is None:
-            out(f"[X] Chunk at {hex(addr)} size {hex(size)} failed after {max_retries} attempts, "
-                f"padding with 0x{SENTINEL:02X}")
-            chunk = bytes([SENTINEL]) * size
-            failed_ranges.append((addr, size))
+                if resp:
+                    chunk = pcom.extract_pcom_data(resp, expected_payload_len=size, out=capture_out)
 
-        res += chunk
-        read_bytes += size
-        addr += size
+                if chunk is not None:
+                    if attempt > 1:
+                        out(f"    [-] Chunk at {hex(addr)} recovered on attempt {attempt}")
+                        log_line(f"RECOVERED addr=0x{addr:08X} size={size} attempt={attempt}/{max_retries}")
+                    break
+
+                reason = captured[-1] if captured else "no response / unknown failure"
+                raw_hex = resp.hex() if resp else "(no frame received)"
+                out(f"    [!] Chunk at {hex(addr)} failed validation (attempt {attempt}/{max_retries})")
+                log_line(f"RETRY     addr=0x{addr:08X} size={size} attempt={attempt}/{max_retries}  "
+                         f"reason=\"{reason}\"  raw_frame={raw_hex}")
+
+            if chunk is None:
+                out(f"[X] Chunk at {hex(addr)} size {hex(size)} failed after {max_retries} attempts, "
+                    f"padding with 0x{SENTINEL:02X}")
+                log_line(f"FAILED    addr=0x{addr:08X} size={size} after {max_retries} attempts, padded with 0x{SENTINEL:02X}")
+                chunk = bytes([SENTINEL]) * size
+                failed_ranges.append((addr, size))
+
+            res += chunk
+            read_bytes += size
+            addr += size
+    finally:
+        if log_file:
+            log_file.close()
 
     out(f"[-] Read is completed (100%)")
     if failed_ranges:
@@ -2258,22 +2315,12 @@ def do_read(ser, pcom_client, addr: int, length: int, flag: int, read_size: int 
             f"0x{SENTINEL:02X} - do not treat these ranges as real PLC content:")
         for fa, fs in failed_ranges:
             out(f"      {hex(fa)} - {hex(fa + fs)} ({fs} bytes)")
+        if log_path:
+            out(f"[-] Full retry/failure log written to: {log_path}")
 
     return res, failed_ranges
 
 def do_write(ser, pcom_client, addr: int, data: bytes, flag: int, out = print) -> None:
-    """
-    Write a contiguous bytes buffer into PLC memory in chunks.
-    
-    :param ser: an open serial object
-    :param pcom_client: PCOM_CLIENT instance 
-    :param addr: starting memory address
-    :type addr: int
-    :param data: bytes to write into memory
-    :type data: bytes
-    :param flag: PLC memory/region selector
-    :type flag: int
-    """
     pcom = pcom_client
     write_size = 976
     write_bytes = 0
@@ -2287,8 +2334,10 @@ def do_write(ser, pcom_client, addr: int, data: bytes, flag: int, out = print) -
         ser.write(write_mem)
         write_bytes += size
         addr += size
-        resp = ser.read(1024*5)
-        pcom.extract_pcom_data(resp)
+        resp = read_binary_frame(ser, isTcp=pcom.isTcp, out=out)
+        validated = pcom.extract_pcom_data(resp, expected_opcode=0xC1, out=out) if resp else None
+        if validated is None:
+            out(f"    [!] Write chunk at {hex(addr - size)} was not confirmed by the PLC")
     
     out(f"[-] Write is completed (100%)")
 
@@ -2411,14 +2460,14 @@ def print_signature_table(ser, pcom_client, log_fn = None) -> None:
     s.write(read_operand_req)
 
     # <-- (B) Read Operands Res (CD)
-    resp = s.read(1024*5)
+    resp = read_binary_frame(s, isTcp = pcom.isTcp, out = out)
 
     # --> (B) Get Resource Table Address Req (16)
     get_resource_table_address_req = pcom.create_read_resource_table_address()
     s.write(get_resource_table_address_req)
 
     # <-- (B) Get Resource Table Address Res (96)
-    resp = s.read(1024*5)
+    resp = read_binary_frame(s, isTcp = pcom.isTcp, out = out)
     rTable_addr, rTable_size = pcom.parse_translate_index(resp)
     rTable_addr_hex = hex(struct.unpack("<I", rTable_addr)[0])
     out(f"\t[-] Resource Table Address: {rTable_addr_hex} Size: {hex(rTable_size)}")
@@ -2428,7 +2477,7 @@ def print_signature_table(ser, pcom_client, log_fn = None) -> None:
     s.write(flush_req)
 
     # <-- (B) Opcode 0x1a Res  (9A)
-    resp = s.read(1024*5)
+    resp = read_binary_frame(s, isTcp = pcom.isTcp, out = out)
     pcom.parse_opcode_1a(resp)
 
     # --> (B) Read Resource Table Memory Req  (01)
@@ -2436,7 +2485,7 @@ def print_signature_table(ser, pcom_client, log_fn = None) -> None:
     s.write(read_rTable_memory)
 
     # <-- (B) Read Resource Table Memory Res  (81)
-    resp = s.read(1024*5)
+    resp = read_binary_frame(s, isTcp = pcom.isTcp, out = out)
     sigTable_index = pcom.parse_read_resource_table(resp)
     out(f"\t[-] Signature Table Index: {sigTable_index}")
 
@@ -2445,7 +2494,7 @@ def print_signature_table(ser, pcom_client, log_fn = None) -> None:
     s.write(get_signature_table_address_req)
 
     # <-- (B) Get Signature Address Res (96)
-    resp = s.read(1024*5)
+    resp = read_binary_frame(s, isTcp = pcom.isTcp, out = out)
     sigTable_address, sigTable_size = pcom.parse_translate_index(resp)
     sigTable_address_hex = hex(struct.unpack("<I", sigTable_address)[0])
     out(f"\t[-] Signature Table Address: {sigTable_address_hex} Size: {hex(sigTable_size)}")
@@ -2455,13 +2504,18 @@ def print_signature_table(ser, pcom_client, log_fn = None) -> None:
     s.write(flush_req)
 
     # <-- (B) Opcode 0x1a Res  (9A)
-    resp = s.read(1024*5)
+    resp = read_binary_frame(s, isTcp = pcom.isTcp, out = out)
     pcom.parse_opcode_1a(resp)
 
     # --> (B) Read Signature Table Memory Req  (01)
     # <-- (B) Read Signature Table Memory Res  (81) - Check
     addr = struct.unpack("<I", sigTable_address)[0]
-    sig_table_data = do_read(ser=s, pcom_client=pcom,addr=addr, length=sigTable_size, flag=4, out = out)
+    sig_table_data, failed_ranges = do_read(ser=s, pcom_client=pcom, addr=addr, length=sigTable_size, flag=4, out = out)
+    if failed_ranges:
+        out(f"[!] {len(failed_ranges)} chunk(s) in signature table read failed validation and "
+            f"were padded with 0xAA - parsed fields at these offsets are not trustworthy:")
+        for fa, fs in failed_ranges:
+            out(f"      {hex(fa)} - {hex(fa + fs)} ({fs} bytes)")
     sigTable = pcom.parse_signature(sig_table_data, out = out)
 
 def read_project_zip(ser, pcom_client, out = print) -> tuple[bytes, list[tuple[int, int]]]:
@@ -2691,6 +2745,60 @@ def read_memory_integers(ser, pcom_client, start: int = 0, count: int = 64, out 
     for i, val in enumerate(values):
         out(f"MI{start + i} = {val}")
     return values
+
+def write_memory_integers(ser, pcom_client, start: int, values: list[int], out = print) -> bool:
+    """
+    Write one or more consecutive MI addresses. Fire-and-forget, same as
+    write_system_integer/write_system_bit - does not itself confirm the
+    values landed. Call read_memory_integers afterward (or use
+    write_and_verify_memory_integers below) to check.
+    """
+    ser.write(pcom_client.create_write_memory_integers(start, values))
+    ser.read(1024 * 5)
+    for i, val in enumerate(values):
+        out(f"[-] MI{start + i} set to {val} (0x{val & 0xFFFF:04X})")
+    return True
+
+def write_and_verify_memory_integers(ser, pcom_client, start: int, values: list[int],
+                                      out = print) -> dict[int, bool] | None:
+    """
+    Write `values` to consecutive MI addresses starting at `start`, then
+    read the same range back and confirm each one landed.
+
+    This is the write half of the "write distinct MI values, confirm via
+    read, then find them in a raw dump" experiment: it exists specifically
+    so you have a checked, ground-truth write before trusting anything a
+    raw memory diff says about where MI lives physically.
+
+    :return: {address: matched} for every address written, or None if the
+             readback itself failed outright
+    :rtype: dict[int, bool] | None
+    """
+    pcom = pcom_client
+    write_memory_integers(ser, pcom, start, values, out = out)
+
+    readback = read_memory_integers(ser, pcom, start = start, count = len(values), out = lambda *a, **k: None)
+    if readback is None:
+        out(f"[X] Could not read back MI{start}..MI{start + len(values) - 1} after write.")
+        return None
+
+    results = {}
+    for i, expected in enumerate(values):
+        addr = start + i
+        got = readback[i]
+        ok = (got == expected)
+        results[addr] = ok
+        status = "OK" if ok else "MISMATCH"
+        out(f"[{'-' if ok else 'X'}] MI{addr}: wrote {expected}, read back {got}  [{status}]")
+
+    failed = [a for a, ok in results.items() if not ok]
+    if failed:
+        out(f"{WARNING}[!] {len(failed)} of {len(values)} MI writes did not verify: "
+            f"{', '.join('MI' + str(a) for a in failed)}{ENDC}")
+    else:
+        out(f"[-] All {len(values)} MI writes verified via readback.")
+
+    return results
 
 def read_memory_longs(ser, pcom_client, start: int = 0, count: int = 32, out = print) -> list[int] | None:
     """
@@ -3256,6 +3364,112 @@ def sweep_resource_ids(ser, pcom_client, out=print) -> None:
 
     out(f"[-] Saved to {filename}")
 
+def do_write_readback_test(
+        ser,
+        pcom_client,
+        addr: int,
+        size: int = 32,
+        flag: int = 1,
+        pattern: bytes | None = None,
+        out = print
+        ) -> bool:
+    """
+    Round-trip test for do_write/do_read: read the original bytes at
+    `addr`, write a known test pattern over them via do_write, read the
+    pattern back via do_read and diff it against what was sent, then
+    restore the original bytes and verify the restore.
+
+    This never leaves PLC memory in a modified state on a normal exit:
+    the original bytes are always written back and re-verified, even if
+    the write/readback comparison fails. If the restore write itself
+    fails, this is reported loudly rather than silently, since that is
+    the one case where the PLC is left altered.
+
+    WARNING: flag selects the memory region (see create_read_memory /
+    create_write_memory). flag=0 has been observed mapping to
+    OS/firmware flash in this codebase's own memory-map tooling
+    (profile_memory_map). Writing to that region can render the PLC
+    unbootable. Test against flag=1 (application memory) first, on a
+    small, known-scratch address, before ever pointing this at flag=0.
+
+    :param ser: an open serial object
+    :param pcom_client: PCOM_CLIENT instance
+    :param addr: starting address to test against
+    :type addr: int
+    :param size: number of bytes to read/write/verify
+    :type size: int
+    :param flag: PLC memory/region selector
+    :type flag: int
+    :param pattern: test bytes to write; defaults to a repeating 0xDEADBEEF
+                    marker sized to `size` if not given
+    :type pattern: bytes | None
+    :return: True if write+readback matched AND restore+reverify matched,
+             False otherwise
+    :rtype: bool
+    """
+    pcom = pcom_client
+
+    if pattern is None:
+        marker = b"\xDE\xAD\xBE\xEF"
+        pattern = (marker * ((size // len(marker)) + 1))[:size]
+    elif len(pattern) != size:
+        out(f"[X] pattern length ({len(pattern)}) must equal size ({size})")
+        return False
+
+    out(f"[-] Starting write/readback test at {hex(addr)}, size={size}, flag={flag}")
+
+    # Step 1: read and preserve the original bytes
+    out(f"[-] Reading original bytes at {hex(addr)} ({size} bytes)...")
+    original, orig_failed = do_read(ser, pcom, addr=addr, length=size, flag=flag, out=out)
+    if orig_failed:
+        out(f"[X] Could not reliably read original bytes at {hex(addr)} - aborting before "
+            f"any write is attempted. do_read reported {len(orig_failed)} failed chunk(s).")
+        return False
+    out(f"[-] Original bytes: {original.hex()}")
+
+    if original == pattern:
+        out(f"{WARNING}[!] Original bytes already equal the test pattern - the write step "
+            f"will not be distinguishable from a no-op. Consider a different pattern.{ENDC}")
+
+    # Step 2: write the test pattern
+    out(f"[-] Writing test pattern: {pattern.hex()}")
+    do_write(ser, pcom, addr, pattern, flag, out=out)
+
+    # Step 3: read back and compare against what was written
+    out(f"[-] Reading back {size} bytes at {hex(addr)}...")
+    readback, rb_failed = do_read(ser, pcom, addr=addr, length=size, flag=flag, out=out)
+
+    write_ok = (not rb_failed) and (readback == pattern)
+
+    if rb_failed:
+        out(f"[X] Readback had {len(rb_failed)} failed/padded chunk(s) - comparison is unreliable.")
+    elif write_ok:
+        out(f"[-] PASS: readback matches written pattern.")
+    else:
+        out(f"[X] FAIL: readback does not match written pattern.")
+        out(f"      wrote:      {pattern.hex()}")
+        out(f"      read back:  {readback.hex()}")
+
+    # Step 4: always attempt to restore the original bytes
+    out(f"[-] Restoring original bytes at {hex(addr)}...")
+    do_write(ser, pcom, addr, original, flag, out=out)
+
+    restore_check, restore_failed = do_read(ser, pcom, addr=addr, length=size, flag=flag, out=out)
+    restore_ok = (not restore_failed) and (restore_check == original)
+
+    if restore_ok:
+        out(f"[-] Restore verified: memory matches original.")
+    else:
+        out(f"{WARNING}[!!!] RESTORE FAILED OR UNVERIFIED at {hex(addr)}. PLC memory may still "
+            f"contain test pattern bytes. Manual intervention may be required.{ENDC}")
+        if restore_failed:
+            out(f"      restore readback had {len(restore_failed)} failed/padded chunk(s)")
+        else:
+            out(f"      expected: {original.hex()}")
+            out(f"      got:      {restore_check.hex()}")
+
+    return write_ok and restore_ok
+
 def profile_memory_map(
         ser,
         pcom_client,
@@ -3426,6 +3640,314 @@ def profile_memory_map(
     out(f"[-] Saved memory map to: {filename}")
     return filename
 
+def do_write_sweep_test(
+        ser,
+        pcom_client,
+        start: int = 0x0,
+        end: int = 0x1000,
+        stride: int = 0x40,
+        probe_size: int = 16,
+        flag: int = 1,
+        filename: str | None = None,
+        fail_fast_threshold: int = 5,
+        out = print
+        ) -> str:
+    """
+    Sweep a range of addresses running a write/readback round-trip at each
+    one, to find which offsets actually accept writes.
+
+    Each probe reads the original bytes, writes a test pattern via a
+    write helper that validates the response against opcode 0xC1 (Write
+    Memory Response) rather than the read-response opcode, reads back,
+    compares, and always restores the original bytes regardless of
+    outcome. Results are logged to CSV.
+
+    Outcomes:
+      READ_FAILED             - could not read original bytes, write never attempted
+      WRITE_REJECTED           - PLC responded with opcode 0xFF (or an
+                                  unconfirmed/invalid write response);
+                                  reason captured in detail
+      READBACK_FAILED          - readback chunk failed validation
+      WRITE_ACCEPTED            - PLC confirmed the write AND readback matches
+      MISMATCH                  - write was confirmed by the PLC but readback
+                                   doesn't match (distinct from REJECTED - this
+                                   means the PLC said OK but the bytes don't
+                                   agree, worth investigating on its own)
+      ACCEPTED_RESTORE_FAILED   - write landed but restore didn't verify
+
+    If the first `fail_fast_threshold` probes all come back WRITE_REJECTED,
+    the sweep stops early - this now works correctly, since do_write's
+    confirmation status is properly threaded through instead of being lost
+    to an unreachable print() call.
+
+    :return: path to the CSV log
+    :rtype: str
+    """
+    pcom = pcom_client
+    filename = filename or f"write_sweep_flag{flag}_{hex(start)}_{hex(end)}_{int(time.time())}.csv"
+
+    marker = b"\xDE\xAD\xBE\xEF"
+    pattern = (marker * ((probe_size // len(marker)) + 1))[:probe_size]
+
+    out(f"[-] Write sweep: {hex(start)}..{hex(end)} stride={hex(stride)} "
+        f"probe_size={probe_size} flag={flag}")
+    out(f"{WARNING}[!] This performs a real write + restore at every address tested.{ENDC}")
+
+    def do_write_confirmed(addr_inner, data_inner, out_inner):
+        """
+        Local variant of do_write that returns whether every chunk was
+        confirmed by the PLC (opcode 0xC1), instead of firing and forgetting.
+        """
+        write_size = 976
+        write_bytes = 0
+        length_inner = len(data_inner)
+        a = addr_inner
+        all_confirmed = True
+        last_reason = ""
+
+        while write_bytes < length_inner:
+            size = min(write_size, length_inner - write_bytes)
+            chunk = data_inner[write_bytes:write_bytes+size]
+            write_mem = pcom.create_write_memory(struct.pack("<I", a), size, chunk, flag=flag)
+            ser.write(write_mem)
+            resp = read_binary_frame(ser, isTcp=pcom.isTcp, out=out_inner)
+
+            captured_here = []
+            def cap(msg, _c=captured_here):
+                _c.append(msg)
+
+            validated = pcom.extract_pcom_data(resp, expected_opcode=0xC1, out=cap) if resp else None
+            if validated is None:
+                all_confirmed = False
+                last_reason = captured_here[-1] if captured_here else "no response to write"
+
+            write_bytes += size
+            a += size
+
+        return all_confirmed, last_reason
+
+    results = []
+    consecutive_rejections = 0
+
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["addr", "addr_hex", "outcome", "detail"])
+
+        addr = start
+        while addr < end:
+            quiet = lambda *a, **k: None
+
+            original, orig_failed = do_read(ser, pcom, addr=addr, length=probe_size,
+                                             flag=flag, out=quiet)
+            if orig_failed:
+                outcome, detail = "READ_FAILED", "could not read original bytes"
+                writer.writerow([addr, hex(addr), outcome, detail])
+                results.append((addr, outcome))
+                out(f"    {hex(addr)}: {outcome}")
+                addr += stride
+                continue
+
+            write_confirmed, reject_reason = do_write_confirmed(addr, pattern, quiet)
+
+            readback, rb_failed = do_read(ser, pcom, addr=addr, length=probe_size,
+                                           flag=flag, out=quiet)
+
+            if not write_confirmed:
+                outcome, detail = "WRITE_REJECTED", reject_reason
+                consecutive_rejections += 1
+            elif rb_failed:
+                outcome, detail = "READBACK_FAILED", "readback chunk validation failed"
+                consecutive_rejections = 0
+            elif readback == pattern:
+                outcome, detail = "WRITE_ACCEPTED", "confirmed by PLC, readback matches"
+                consecutive_rejections = 0
+            else:
+                outcome, detail = "MISMATCH", f"PLC confirmed write but readback differs: got {readback.hex()}"
+                consecutive_rejections = 0
+
+            # Always restore, regardless of outcome above.
+            restore_confirmed, restore_reject_reason = do_write_confirmed(addr, original, quiet)
+            restore_check, restore_failed = do_read(ser, pcom, addr=addr, length=probe_size,
+                                                      flag=flag, out=quiet)
+            restore_ok = restore_confirmed and (not restore_failed) and (restore_check == original)
+
+            if not restore_ok and outcome == "WRITE_ACCEPTED":
+                outcome = "ACCEPTED_RESTORE_FAILED"
+                detail += f" | RESTORE DID NOT VERIFY (confirmed={restore_confirmed}, reason={restore_reject_reason})"
+                out(f"{WARNING}[!!!] {hex(addr)}: write was accepted but restore did not verify.{ENDC}")
+
+            writer.writerow([addr, hex(addr), outcome, detail])
+            results.append((addr, outcome))
+            out(f"    {hex(addr)}: {outcome}" + (f" ({detail})" if outcome == "WRITE_REJECTED" else ""))
+
+            if consecutive_rejections >= fail_fast_threshold:
+                out(f"\n{WARNING}[!] {consecutive_rejections} consecutive WRITE_REJECTED results - "
+                    f"looks like a uniform write block (RUN mode / permissions), not "
+                    f"address-specific. Stopping sweep early.{ENDC}")
+                break
+
+            addr += stride
+
+    accepted = [a for a, o in results if o == "WRITE_ACCEPTED"]
+    rejected = [a for a, o in results if o == "WRITE_REJECTED"]
+    out(f"\n[-] Sweep summary:")
+    out(f"      Probed: {len(results)}")
+    out(f"      WRITE_ACCEPTED: {len(accepted)}")
+    out(f"      WRITE_REJECTED: {len(rejected)}")
+    if accepted:
+        out(f"      Accepted addresses: {', '.join(hex(a) for a in accepted[:20])}"
+            f"{' ...' if len(accepted) > 20 else ''}")
+    out(f"[-] Full log: {filename}")
+
+    return filename
+
+def do_write_full_diagnostic(
+        ser,
+        pcom_client,
+        addr: int = 0x0,
+        size: int = 16,
+        flags_to_test: list[int] | None = None,
+        filename: str | None = None,
+        out = print
+        ) -> str:
+    """
+    Comprehensive write-access diagnostic: for each candidate memory flag,
+    attempts a write/readback round-trip both with and without sending the
+    0x1A 'Flush Memory Buffer' request immediately beforehand, since
+    print_signature_table always sends 0x1A before its reads but do_write
+    never does before a write - this tests whether that's a required
+    precondition rather than a read-specific quirk.
+
+    Every combination is self-restoring: original bytes are read first and
+    always written back regardless of outcome, exactly as in
+    do_write_readback_test.
+
+    :param ser: an open serial object
+    :param pcom_client: PCOM_CLIENT instance
+    :param addr: address to test at (kept constant across the matrix so
+                 results are directly comparable)
+    :type addr: int
+    :param size: bytes per probe
+    :type size: int
+    :param flags_to_test: memory flag values to try; defaults to a broad
+                           sweep covering every flag value referenced
+                           anywhere in this script (0, 1, 4) plus untested
+                           adjacent values
+    :type flags_to_test: list[int] | None
+    :param filename: output CSV path (auto-named if None)
+    :type filename: str | None
+    :return: path to the CSV log
+    :rtype: str
+    """
+    pcom = pcom_client
+    flags_to_test = flags_to_test if flags_to_test is not None else [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    filename = filename or f"write_full_diag_{hex(addr)}_{int(time.time())}.csv"
+
+    marker = b"\xDE\xAD\xBE\xEF"
+    pattern = (marker * ((size // len(marker)) + 1))[:size]
+
+    out(f"[-] Full write diagnostic at {hex(addr)}, size={size}")
+    out(f"[-] Testing flags: {flags_to_test}, each with and without 0x1A flush precondition")
+    out(f"{WARNING}[!] This performs real writes + restores at every combination.{ENDC}")
+
+    def do_write_confirmed(flag_inner, data_inner, out_inner):
+        """Write, return (all_confirmed, last_reason)."""
+        write_size = 976
+        write_bytes = 0
+        length_inner = len(data_inner)
+        a = addr
+        all_confirmed = True
+        last_reason = ""
+
+        while write_bytes < length_inner:
+            chunk_size = min(write_size, length_inner - write_bytes)
+            chunk = data_inner[write_bytes:write_bytes+chunk_size]
+            write_mem = pcom.create_write_memory(struct.pack("<I", a), chunk_size, chunk, flag=flag_inner)
+            ser.write(write_mem)
+            resp = read_binary_frame(ser, isTcp=pcom.isTcp, out=out_inner)
+
+            captured_here = []
+            def cap(msg, _c=captured_here):
+                _c.append(msg)
+
+            validated = pcom.extract_pcom_data(resp, expected_opcode=0xC1, out=cap) if resp else None
+            if validated is None:
+                all_confirmed = False
+                last_reason = captured_here[-1] if captured_here else "no response to write"
+
+            write_bytes += chunk_size
+            a += chunk_size
+
+        return all_confirmed, last_reason
+
+    results = []
+    quiet = lambda *a, **k: None
+
+    with open(filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["flag", "flushed_first", "outcome", "detail"])
+
+        for flag in flags_to_test:
+            for flushed in (False, True):
+                label = f"flag={flag} flushed={flushed}"
+
+                # Read original for this combination fresh each time, since
+                # a previous combination's restore should have already put
+                # it back, but this re-confirms rather than assuming.
+                original, orig_failed = do_read(ser, pcom, addr=addr, length=size,
+                                                 flag=flag, out=quiet)
+                if orig_failed:
+                    outcome, detail = "READ_FAILED", "could not read original bytes at this flag"
+                    writer.writerow([flag, flushed, outcome, detail])
+                    results.append((flag, flushed, outcome))
+                    out(f"    {label}: {outcome}")
+                    continue
+
+                if flushed:
+                    ser.write(pcom.create_opcode_1a_request())
+                    flush_resp = read_binary_frame(ser, isTcp=pcom.isTcp, out=quiet)
+                    pcom.parse_opcode_1a(flush_resp) if flush_resp else None
+
+                write_confirmed, reject_reason = do_write_confirmed(flag, pattern, quiet)
+                readback, rb_failed = do_read(ser, pcom, addr=addr, length=size,
+                                               flag=flag, out=quiet)
+
+                if not write_confirmed:
+                    outcome, detail = "WRITE_REJECTED", reject_reason
+                elif rb_failed:
+                    outcome, detail = "READBACK_FAILED", "readback chunk validation failed"
+                elif readback == pattern:
+                    outcome, detail = "WRITE_ACCEPTED", "confirmed by PLC, readback matches"
+                else:
+                    outcome, detail = "MISMATCH", f"PLC confirmed write but readback differs: got {readback.hex()}"
+
+                # Always restore.
+                restore_confirmed, restore_reason = do_write_confirmed(flag, original, quiet)
+                restore_check, restore_failed = do_read(ser, pcom, addr=addr, length=size,
+                                                          flag=flag, out=quiet)
+                restore_ok = restore_confirmed and (not restore_failed) and (restore_check == original)
+
+                if not restore_ok and outcome == "WRITE_ACCEPTED":
+                    outcome = "ACCEPTED_RESTORE_FAILED"
+                    detail += f" | RESTORE DID NOT VERIFY (confirmed={restore_confirmed}, reason={restore_reason})"
+                    out(f"{WARNING}[!!!] {label}: write accepted but restore did not verify.{ENDC}")
+
+                writer.writerow([flag, flushed, outcome, detail])
+                results.append((flag, flushed, outcome))
+                out(f"    {label}: {outcome}")
+
+    accepted = [(fl, fs) for fl, fs, o in results if o == "WRITE_ACCEPTED"]
+    out(f"\n[-] Diagnostic summary:")
+    out(f"      Combinations tested: {len(results)}")
+    out(f"      WRITE_ACCEPTED: {len(accepted)}")
+    if accepted:
+        out(f"      Accepted combinations: {accepted}")
+    else:
+        out(f"      No combination of flag/flush produced a confirmed write.")
+    out(f"[-] Full log: {filename}")
+
+    return filename
+
 def main() -> None:
     """
     Entry point
@@ -3438,7 +3960,7 @@ def main() -> None:
         return
     ser, pcom = result
 
-    upload_auth(ser, pcom, "12345678")
+    upload_auth(ser, pcom, "")
 
     try:
         while True:
@@ -3456,6 +3978,9 @@ def main() -> None:
             print(" 11) Read Information Mode Password")
             print(" 12) Dump ALL operands to CSV folder")
             print(" 13) Profile Memory Map (coarse entropy scan)")
+            print(" 14) [DEBUG] Test Write/Readback")
+            print(" 15) [DEBUG] Memory Write Sweep")
+            print(" 16) [DEBUG] Write Sweep 2")
             print(" 0) Exit")
 
             choice = input("Select an option: ").strip()
@@ -3496,9 +4021,42 @@ def main() -> None:
                                    end = prompt_int("End address", 0x1000000),
                                       stride = prompt_int("Stride", 0x10000),
                                         probe_size = prompt_int("Probe size", 512),
-                                            flag = prompt_int("Memory flag", 1))  
+                                            flag = prompt_int("Memory flag", 1))
+            elif choice == "14":
+               addr = prompt_int("Test address", 0x0)
+               size = prompt_int("Test size (bytes)", 32)
+               flag = prompt_int("Memory flag (1=application, 0=OS/firmware - DANGEROUS)", 1)
+               if flag == 0 and not prompt_yes_no(
+                       f"{WARNING}flag=0 may be OS/firmware flash - a failed restore here "
+                       f"can brick the PLC. Continue?{ENDC}", default = False):
+                   print("[-] Cancelled.")
+               else:
+                   do_write_readback_test(ser, pcom, addr = addr, size = size, flag = flag)
+
+            elif choice == "15":
+                start = prompt_int("Sweep start address", 0x0)
+                end = prompt_int("Sweep end address", 0x1000)
+                stride = prompt_int("Stride", 0x40)
+                psize = prompt_int("Probe size (bytes)", 16)
+                flag = prompt_int("Memory flag (1=application, 0=OS/firmware - DANGEROUS)", 1)
+                if flag == 0 and not prompt_yes_no(
+                        f"{WARNING}flag=0 sweep with writes at every offset - high risk. "
+                        f"Continue?{ENDC}", default = False):
+                    print("[-] Cancelled.")
+                else:
+                    do_write_sweep_test(ser, pcom, start = start, end = end,
+                                        stride = stride, probe_size = psize, flag = flag)
+
+            elif choice == "16":
+                addr = prompt_int("Test address", 0x0)
+                size = prompt_int("Test size (bytes)", 16)
+                flags_input = prompt_str("Flags to test, comma-separated", "0,1,2,3,4,5,6,7,8")
+                flags = [int(x.strip(), 0) for x in flags_input.split(",")]
+                do_write_full_diagnostic(ser, pcom, addr = addr, size = size, flags_to_test = flags)
+                             
             else:
-                print("  [!] Invalid choice. Pick a number from the menu.")
+               print("  [!] Invalid choice. Pick a number from the menu.")
+
 
     finally:
         try:

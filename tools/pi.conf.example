@@ -1,0 +1,4 @@
+# Copy this file to tools/pi.conf and fill it in. pi.conf is not tracked by git.
+PI_USER=pi
+PI_HOST=raspberrypi.local
+PI_REPO=/home/pi/unitronics_forensics_tool

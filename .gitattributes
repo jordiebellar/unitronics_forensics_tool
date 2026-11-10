@@ -1,0 +1,7 @@
+# Keep line endings identical on Windows and the Pi so diffs stay clean
+*.py   text eol=lf
+*.sh   text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+*.ps1  text eol=crlf
+*.bin  binary

@@ -1,0 +1,2 @@
+# Needed on BOTH the PC and the Pi
+pyserial

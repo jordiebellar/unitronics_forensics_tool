@@ -1,0 +1,3 @@
+# PC only (needs a display and tkinter)
+-r requirements.txt
+FreeSimpleGUI

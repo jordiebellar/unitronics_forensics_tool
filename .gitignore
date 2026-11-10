@@ -1,6 +1,19 @@
+# Python
 __pycache__/
-FILE DUMPS/
+*.pyc
+.venv/
+
+# All captured data stays out of git. It moves Pi -> PC with tools/sync_data.ps1
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Safety net: stray outputs if a script is run from the wrong folder
 *.bin
 *.csv
-SWEEPS/
-BIN DUMPS/
+hotspot_hammer_*.txt
+dump_*/
+*_sweep_*/
+
+# Machine-specific settings
+tools/pi.conf
